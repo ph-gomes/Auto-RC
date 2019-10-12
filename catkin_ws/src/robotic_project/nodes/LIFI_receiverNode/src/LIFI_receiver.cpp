@@ -1,0 +1,72 @@
+//////////////////////////////////////////////////////////////////////////////////
+//  created:    2016/11/10 - 18:40
+//  filename:   LIFI_receiver.cpp
+//
+//  author:     Giovani Bernardes Vitor
+//              Copyright DEG / UFLA
+//
+//  version:    $Id: $
+//
+//  purpose:
+//
+//////////////////////////////////////////////////////////////////////////////////
+#include <LIFI_receiver/LIFI_receiver.h>
+
+
+LIFI_receiver::LIFI_receiver(ros::NodeHandle *rosNode_): rosNode(rosNode_)
+{
+
+
+	command_pub = rosNode->advertise<std_msgs::Float32MultiArray>("/LIFI_receiver/commands", 1);
+
+	is_info_received = false;
+
+	command.data.reserve(3);
+   	command.data.resize(3,0.0);
+
+	ROS_INFO(" LIFI_receiver correctly configured and running!");
+}
+
+LIFI_receiver::~LIFI_receiver()
+{
+                //Aqui devemos coletar os dados enviados pelo RASPBERRY
+                //e de acordo com cada resposta (0000,0011,1100,1111)
+                // executamos um comando.
+}
+
+void LIFI_receiver::start_reception()
+{
+
+	ROS_INFO(" Starting signal reception...!");
+
+	if(is_info_received)
+	{
+		this->send_info();
+		is_info_received = false;
+	}
+
+}
+void LIFI_receiver::codification_process()
+{
+  	ROS_INFO(" Performs signal decodification ... " );
+
+}
+
+
+bool LIFI_receiver::send_info()
+{
+
+	ROS_INFO(" send_info ... ");
+
+	command.data[0] = ros::Time::now().toSec(); // Timestamp
+	command.data[1] = info;
+
+	this->command_pub.publish(command);
+
+  	return true;
+}
+
+
+
+
+

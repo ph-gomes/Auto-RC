@@ -1,0 +1,290 @@
+#include "NavigationControlNode/navigationControl.h"
+
+NavigationControl::NavigationControl(ros::NodeHandle *rosNode_): rosNode(rosNode_)
+{
+     	g_window_name = std::string("NavigationControl");
+  	//cv::namedWindow(g_window_name);
+	
+	//cv::setMouseCallback(g_window_name, onMouse, this);
+
+	std::string topic = rosNode->resolveName("image");
+	image_transport::ImageTransport it(*rosNode);  	
+  	image_sub = it.subscribe(topic, 1, boost::bind(&NavigationControl::image_receive, this, _1));
+
+	poseArray_sub = rosNode->subscribe<geometry_msgs::PoseArray>("/trajectoryGeneration/poses", 1, &NavigationControl::trajectory_receive,this);
+	pose2D_sub = rosNode->subscribe<geometry_msgs::Pose2D>("/virtualGPS/pose2D", 1, &NavigationControl::vehiclePose_receive,this);
+		
+	command_pub = rosNode->advertise<std_msgs::Float32MultiArray>("/navigationControl/commands", 1);
+	
+	command.data.reserve(5);
+   	command.data.resize(5,0.0);
+	
+
+	prev_lateral_error = 0.0;
+   	error_sum = 0.0;
+	erro_lateral = 0.0 , erro_orientacao = 0.0;
+	
+	prev_time= ros::Time::now().toSec();
+
+	rosNode->param("k_p",kp,0.0015);
+	rosNode->param("k_i",ki,0.00);
+	rosNode->param("k_d",kd,0.00);
+	rosNode->param("speed_",speed,2.5);	
+
+	std::cout<< "Speed: " << speed <<  " kp: " << kp <<" kd: "<< kd <<" ki: "<< ki <<std::endl;
+	ROS_INFO("Speed: %2.2f  kp: %2.2f   kd: %2.2f  ki: %2.2f ",speed,kp,kd,ki);
+
+
+	//k1 = 0.009; 
+	//k2 = 0.0;
+	//speed = 2.6;
+	is_trajectory_received = false;
+
+	// Start the OpenCV window thread so we don't have to waitKey() somewhere
+  	//::startWindowThread();
+}
+
+NavigationControl::~NavigationControl()
+{
+	send_command(0.0,0.0);
+	//cv::destroyWindow(g_window_name);
+}
+
+void NavigationControl::vehiclePose_receive(const geometry_msgs::Pose2D::ConstPtr& msg)
+{
+  	pose.x = msg->x;
+	pose.y = msg->y;
+	pose.theta = msg->theta;
+
+	
+	ROS_INFO(" Pose 2D Received ... x[%f] y[%f] theta[%f]",pose.x,pose.y,pose.theta);
+  	
+	ROS_INFO(" kp: %2.5f  kd: %2.5f  ki: %2.5f ",kp,kd,ki);
+
+
+	if (!is_trajectory_received)
+		return;
+	
+	find_errors(erro_lateral,erro_orientacao);
+
+	
+	// Control law
+	double delta = control(erro_lateral, erro_orientacao, kp, kd, ki);
+
+	
+	// Finish navigation if vehicle's pose is close from goal. 
+	double approx = 10.0;
+	if(is_navigation_finished(approx)) speed = 0.0;
+
+	static int count=0;
+	count ++;
+	//if(count < 3) speed =  speed - 0.1;	
+	
+	
+	ROS_INFO(" Speed: %3.3f[m/s] Erro_lateral: %3.3f[pxs] Erro_orientacao: %3.3f[rad] delta: %3.3f[rad]",speed,erro_lateral,erro_orientacao,delta);
+	send_command( delta, speed);
+}
+
+void NavigationControl::trajectory_receive(const geometry_msgs::PoseArray::ConstPtr& msg)
+{
+	path.poses.clear();
+	path.poses = msg->poses;
+
+  	//for(int i = 0; i <= msg->poses.size(); ++i){
+//
+//		//Add points to trajectory...
+//    		path.poses[i] = msg->poses[i];
+//		ROS_INFO("Coordenada X[%f], Coordenada Y[%f], Angulo[%f]",path.poses[i].position.x,path.poses[i].position.y,path.poses[i].position.z);
+//	}
+
+	is_trajectory_received = true;
+	
+	ROS_INFO(" Trajectory points Received ... ");
+  	//printf("Trajectory points Received ...");
+	
+
+	
+}
+
+
+double NavigationControl::control(double &erro_lateral, double &erro_orientacao, double kp_, double kd_, double ki_)
+{
+	
+	//std::cout << "aux: " << aux << " k1:" << k1 << " speed: " << speed << " k2: " << k2 << std::endl;
+	
+	double u,time,dt= 0;
+	time=ros::Time::now().toSec();
+	dt=time-prev_time;
+	
+	//roslaunch robotic_project robotic_project.launch ki:=0.0008 kd:=0.001 kp:=0.0006
+
+	
+	error_sum += erro_lateral * dt;  //integral
+	error_sum = std::max(-50.0, std::min(error_sum, 50.0)); //saturation integral
+
+
+	u = ( erro_lateral * kp_ ) + ( kd_ * (erro_lateral - prev_lateral_error) / dt ) + ( ki_ * error_sum) ;
+	
+	//Lei de Controle
+	double delta = ( erro_orientacao * kp_ ) + atan( u / this->speed ); // [rad]
+	
+
+	//double delta = erro_orientacao + atan(erro_lateral*kp_ / (this->speed )); // [rad]
+
+	prev_time=time;
+	prev_lateral_error = erro_lateral;
+
+	return delta;
+
+}
+
+
+
+bool NavigationControl::is_navigation_finished(double radius)
+{
+	
+	geometry_msgs::Pose goal = path.poses[points.size() - 1];
+	double dist = distanceCalculate(pose.x, pose.y, goal.position.x, goal.position.y);
+
+	return (dist<radius); 
+}
+
+
+
+
+void NavigationControl::image_receive(const sensor_msgs::ImageConstPtr& msg)
+{
+  	boost::mutex::scoped_lock lock(g_image_mutex);
+
+  	try
+    	{
+      		g_last_image = cv_bridge::toCvShare(msg, "bgr8")->image;
+    	} catch(cv_bridge::Exception)
+    	{
+     		ROS_ERROR("Unable to convert %s image to bgr8", msg->encoding.c_str());
+      		//return false;
+    	}
+
+  	if (!g_last_image.empty()) 
+	{
+    		const cv::Mat &image = g_last_image;
+    		//image_processing(image);
+    
+  	}
+}
+
+void NavigationControl::image_processing(const cv::Mat &image)
+{
+	cv::Mat gray,src;	
+	src = image;
+
+	
+  	/// Draw the circles detected
+  	for( size_t i = 0; i < points.size(); i++ )
+  	{      		
+      		cv::circle( src, points[i], 3, cv::Scalar(0,255,0), -1, 8, 0 );      		
+   	}
+	
+	imageShow((const cv::Mat) src);
+}
+
+void NavigationControl::imageShow(const cv::Mat &image)
+{
+	//ROS_INFO("image show");
+	cv::imshow(g_window_name, image);
+	cv::waitKey(3);
+
+}
+
+void NavigationControl::send_command(float steering, float speed)
+{
+	command.data[0] = ros::Time::now().toSec(); // Timestamp
+	command.data[1] = std::max(std::min(steering,(float)0.6),(float)-0.6); // steering [rad]
+	command.data[2] = speed; // speed [m/s]
+	
+	command.data[3] = erro_lateral;
+	command.data[4] = erro_orientacao;
+	//std::cout << "steering: " << steering << " speed: " << speed << std::endl;
+	this->command_pub.publish(command);
+}
+
+double NavigationControl::distanceCalculate(double x0, double y0, double x1, double y1) /////
+{
+	double x = x0 - x1;
+	double y = y0 - y1;
+	double dist;
+
+	dist = sqrt((x * x) + (y * y));
+	
+	return dist;
+}
+
+void NavigationControl::find_errors(double &erro_lateral, double &erro_orientacao) /////
+{
+	float menor=10000000.0;
+	float dist;	
+	int id_menor=0;
+	
+	//std::cout << "finde_erros: " << path.poses.size() << std::endl;
+
+	for(int i = 0; i <= path.poses.size(); ++i)
+	{
+		
+		dist = distanceCalculate(pose.x, pose.y, path.poses[i].position.x, path.poses[i].position.y);
+		//std::cout << " dist: " << dist << " menor: " << menor << std::endl; 
+		if(dist < menor)
+		{ 
+			menor = dist;
+			id_menor = i;
+		}
+	}
+		
+
+	double x0 = path.poses[id_menor].position.x;
+	double y0 = path.poses[id_menor].position.y;
+
+	double x1 = path.poses[id_menor+1].position.x;
+	double y1 = path.poses[id_menor+1].position.y;
+
+	double angle = anguloCalculate(x1-x0, y1-y0, pose.x - x0, pose.y - y0);
+
+	
+	//std::cout << " angle: " << angle << std::endl;
+	//std::cout << " id_menor: " << id_menor << " pose.theta: " << pose.theta << " pose.traje: " << path.poses[id_menor].position.z  << std::endl;
+
+	erro_lateral = (angle<=0)? menor: menor * -1.0;
+	
+	//erro_orientacao = (pose.theta - path.poses[id_menor].position.z) * PI/ 180.0;
+	erro_orientacao = (path.poses[id_menor].position.z - pose.theta) * PI/ 180.0;
+
+	//std::cout << "menor: " << menor << " erro_lateral: " << erro_lateral << " erro_orientacao: " << erro_orientacao << std::endl;
+	
+}
+
+double NavigationControl::anguloCalculate(double x0, double y0, double x1, double y1)
+
+{	
+	
+	double dot = (x0*x1)+(y0*y1); 
+	double det = (x0*y1)-(y0*x1);
+	double angle;
+
+	angle = atan2(det, dot);
+	angle = (180/PI)*angle;
+
+        //angle = (y1<0) ? angle+360.0 : angle ;
+	
+	return angle;
+	
+	/*
+	double scalar = (x0*x1)+(y0*y1);
+	
+	double norma = sqrt(x0*x0 + y0*y0 ) * sqrt(x1*x1 + y1*y1 );
+
+	double angle = acos(scalar / norma) * 180.0 / PI;
+	
+	//cout << "x0: " << x0 << " y0: " << y0 << " x1:" << x1 << " y1: " << y1 << "scalar: "<< scalar << "norma: " << norma << " angle: " << angle << endl;  
+	return angle;
+*/
+}
+

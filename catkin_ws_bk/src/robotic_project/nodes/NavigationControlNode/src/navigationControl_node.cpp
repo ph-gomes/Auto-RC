@@ -1,0 +1,34 @@
+//////////////////////////////////////////////////////////////////////////////////
+//  created:    2016/11/01 - 18:40
+//  filename:   navigationControl_node.cpp
+//
+//  author:     Giovani Bernardes Vitor
+//              Copyright DEG / UFLA
+// 
+//  version:    $Id: $
+//
+//  purpose:	Get pose2D from VirtualGPS and trajectory points from Trajectory 
+//              Generation to performe navigation control given as output the 
+//              [steering wheel "rad", speed "m/s"]
+//
+//////////////////////////////////////////////////////////////////////////////////
+#include <ros/ros.h>
+#include <stdlib.h> 
+
+#include <NavigationControlNode/navigationControl.h>
+
+int main(int argc, char **argv) 
+{
+	ros::init(argc, argv, "Navigation_Control");
+  	if (ros::names::remap("image") == "image") 
+	{
+    		ROS_WARN("Topic 'image' has not been remapped! Typical command-line usage:\n"
+             		 "\t$ rosrun robotic_project navigationControl_node image:=<image topic>");
+  	}
+
+  	ros::NodeHandle nh;  	
+	NavigationControl obj(&nh);
+  	ros::spin();
+  
+  	return 0;
+}

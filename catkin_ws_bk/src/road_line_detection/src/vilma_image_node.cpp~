@@ -1,0 +1,38 @@
+#include <ros/ros.h>
+#include <image_transport/image_transport.h>
+#include <sensor_msgs/image_encodings.h>
+
+
+
+#include "RoadLineProcessing.hpp"
+
+
+//time good image 1443881808.787054 / rosbag play -s 257.1s
+//time good image from 395-414s (19s) / rosbag play -s 395s  
+//time good image from 450-458s (19s) / rosbag play -s 450s 
+
+//to tun the application  rosrun vilma_perception vilma_image_node _image_transport:=compressed
+
+// rosrun vilma_perception vilma_ime_node /image_raw/compressed _image_transport:=compressed
+// Add project to workspace ROS: . ~/vilma_perception_ws/devel/setup.bash
+
+int main(int argc, char **argv)
+{
+
+
+  ros::init(argc, argv, "image_listener");
+  ros::NodeHandle nh;
+
+  //ros::Publisher pub = nh.advertise<std_msgs::Int32MultiArray>("ImageControlError", 2);
+
+  image_transport::ImageTransport it(nh);
+  RoadLineProcessing myRoad(nh);
+  //image_transport::Subscriber sub = it.subscribe("/pg_15370651/image_raw", 1,boost::bind(&RoadLineProcessing::imageCallback, &myRoad, _1));
+  //image_transport::Subscriber sub = it.subscribe("/image_raw", 1,boost::bind(&RoadLineProcessing::imageCallback, &myRoad, _1)); 
+ ros::spin();
+
+
+
+
+  return 0;
+}

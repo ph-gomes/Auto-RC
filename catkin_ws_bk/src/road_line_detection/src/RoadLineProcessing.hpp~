@@ -1,0 +1,136 @@
+/*
+ * RoadLineProcessing.hpp
+ *
+ *  Created on: Oct 26, 2015
+ *      Author: giovani
+ */
+
+#ifndef SRC_ROADLINEPROCESSING_HPP_
+#define SRC_ROADLINEPROCESSING_HPP_
+
+#include <algorithm>
+
+#include <ros/ros.h>
+#include <sensor_msgs/image_encodings.h>
+#include <cv_bridge/cv_bridge.h>
+
+#include "std_msgs/Float32MultiArray.h"
+
+
+//#include "../GRANSAC/include/GRANSAC.hpp"
+//#include "../GRANSAC/include/LineModel.hpp"
+
+#include "opencv2/highgui/highgui.hpp"
+#include "opencv2/video/tracking.hpp"
+
+#include "opencv2/opencv.hpp"
+#include "opencv2/core.hpp"
+
+#include <pcl/io/pcd_io.h>
+#include <pcl/point_types.h>
+//#include <pcl/sample_consensus/sac.h>
+#include <pcl/sample_consensus/ransac.h>
+#include <pcl/sample_consensus/model_types.h>
+#include <pcl/sample_consensus/method_types.h>
+#include <pcl/sample_consensus/sac_model_line.h>
+
+#include <pcl/segmentation/sac_segmentation.h>
+
+#include <pcl/sample_consensus/sac.h>
+#include <pcl/sample_consensus/lmeds.h>
+#include <pcl/sample_consensus/ransac.h>
+#include <pcl/sample_consensus/rransac.h>
+#include <pcl/sample_consensus/msac.h>
+#include <pcl/sample_consensus/rmsac.h>
+#include <pcl/sample_consensus/mlesac.h>
+#include <pcl/sample_consensus/sac_model.h>
+#include <pcl/sample_consensus/sac_model_plane.h>
+#include <pcl/sample_consensus/sac_model_sphere.h>
+#include <pcl/sample_consensus/sac_model_cylinder.h>
+#include <pcl/sample_consensus/sac_model_circle.h>
+#include <pcl/sample_consensus/sac_model_line.h>
+#include <pcl/sample_consensus/sac_model_normal_plane.h>
+#include <pcl/sample_consensus/sac_model_parallel_plane.h>
+
+
+#include "../lsd_1.6/lsd.h"
+#include "HorizontalLine.hpp"
+#include "controller.h"
+
+
+typedef pcl::SampleConsensusModelLine<pcl::PointXYZ>::Ptr SampleConsensusModelLinePtr;
+
+
+/**
+
+class to receive the handle of ros with the image
+**/
+class RoadLineProcessing{
+   double width_filter; ///between 0-1. it is the low pass coeficcient to filter the width of the road
+   double max_filter; ///between 0-1. it is the low pass coeficcient to filter the position of the best detected line(which has bigger histogram value)
+   double histogram_filter; // ///between 0-1. it is the low pass coeficcient to filter of the histogram k respect to histogram k-1
+
+   double line_resolution; /// resolution of the horizontal grid in meters
+   double width_road_m; ///size of the road in meters
+   int width_image;
+   int heigh_image;
+   int roiX;
+   int roiY;
+
+   std::vector< HorizontalLine > hlines;
+
+   unsigned char *search_mask;
+   double *image;
+
+   cv::KalmanFilter *KF;
+   cv::Mat_<float> *measurement;
+
+   cv::Mat_<float> *mb_ant;
+
+
+   Eigen::VectorXf previous_coeffr;
+
+   cv::Mat_<float> *desired_line; // [x,y] (pixels), [m] (radians), [b] (pixels)
+
+   ros::Publisher pubJoystickMA;
+   ros::Subscriber subSensorsMA;
+
+   std_msgs::Float32MultiArray joystick_ma;
+
+   double velocity;
+   double ex_ant;
+   double ex_sum;
+   double t_ant;
+   double kp,ki,kd;
+public:
+/**
+@brief constructor of class with initi with default parameters
+@TODO: use rosparam to configure the parameters
+**/
+RoadLineProcessing(ros::NodeHandle nh);
+
+~RoadLineProcessing();
+
+/**
+@brief
+ROS callback that return the image from the topic
+@param msg sensor_msgs::Image
+
+**/
+void imageCallback(const sensor_msgs::ImageConstPtr& msg);
+
+void SensorsMaAcquisition(const std_msgs::Float32MultiArray::ConstPtr &msg);
+
+void Old_lineExtraction(const sensor_msgs::ImageConstPtr& msg);
+void lineExtraction(const sensor_msgs::ImageConstPtr& msg);
+
+Eigen::VectorXf lineFitting(std::map<int,double>, double *,cv_bridge::CvImagePtr cv_ptr);
+
+double visual_servoing_control(cv::Point2f statePt1, cv::Point2f statePt2 );
+void send_data(double driver_wheel, double gas, double brake);
+
+};
+
+
+
+#endif /* SRC_ROADLINEPROCESSING_HPP_ */

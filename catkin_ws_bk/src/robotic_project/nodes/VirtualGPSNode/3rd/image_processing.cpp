@@ -1,0 +1,208 @@
+#include "virtualGPS/image_processing.h"
+
+
+//default capture width and height
+const int FRAME_WIDTH = 1600;
+const int FRAME_HEIGHT = 1200;
+//max number of objects to be detected in frame
+const int MAX_NUM_OBJECTS=10;
+//minimum and maximum object area
+const int MIN_OBJECT_AREA = 250;
+const int MAX_OBJECT_AREA = 20000;//FRAME_HEIGHT*FRAME_WIDTH/1.5;
+//names that will appear at the top of each window
+//const string windowName = "Original Image";
+//const string windowName1 = "HSV Image";
+//const string windowName2 = "Thresholded Image";
+//const string windowName3 = "After Morphological Operations";
+//const string trackbarWindowName = "Trackbars";
+
+
+
+
+string intToString(int number){
+
+	std::stringstream ss;
+	ss << number;
+	return ss.str();
+}
+
+ImageProcessing::ImageProcessing()
+{
+        //initial min and max HSV filter values.
+	//these will be changed using trackbars
+	H_MIN = 0;
+	H_MAX = 256;
+	S_MIN = 0;
+	S_MAX = 256;
+	V_MIN = 0;
+	V_MAX = 256;
+	
+
+
+	//The following for canny edge detec
+	
+	edgeThresh = 1;
+	lowThreshold;
+	max_lowThreshold = 100;
+	ratio = 3;
+	kernel_size = 3;
+	//window_name = "Edge Map";
+
+}
+
+ImageProcessing::~ImageProcessing()
+{
+	
+}
+
+
+
+void ImageProcessing::drawObject(vector<Object> theObjects,Mat &frame, Mat &temp, vector< vector<Point> > contours, vector<Vec4i> hierarchy){
+
+	for(int i =0; i<theObjects.size(); i++){
+	cv::drawContours(frame,contours,i, cv::Scalar(0,0,10) /*theObjects.at(i).getColor()*/,3,8,hierarchy);
+	cv::circle(frame,cv::Point(theObjects.at(i).getXPos(),theObjects.at(i).getYPos()),5,theObjects.at(i).getColor());
+	cv::putText(frame,intToString(theObjects.at(i).getXPos())+ " , " + intToString(theObjects.at(i).getYPos()),cv::Point(theObjects.at(i).getXPos(),theObjects.at(i).getYPos()+20),1,1,theObjects.at(i).getColor());
+	cv::putText(frame,theObjects.at(i).getType(),cv::Point(theObjects.at(i).getXPos(),theObjects.at(i).getYPos()-20),1,2,theObjects.at(i).getColor());
+	}
+}
+
+void ImageProcessing::drawObject(vector<Object> theObjects,Mat &frame){
+
+	for(int i =0; i<theObjects.size(); i++){
+
+	cv::circle(frame,cv::Point(theObjects.at(i).getXPos(),theObjects.at(i).getYPos()),10,cv::Scalar(0,0,255));
+	cv::putText(frame,intToString(theObjects.at(i).getXPos())+ " , " + intToString(theObjects.at(i).getYPos()),cv::Point(theObjects.at(i).getXPos(),theObjects.at(i).getYPos()+20),1,1,Scalar(0,255,0));
+	cv::putText(frame,theObjects.at(i).getType(),cv::Point(theObjects.at(i).getXPos(),theObjects.at(i).getYPos()-30),1,2, cv::Scalar(0,0,10) );//theObjects.at(i).getColor());
+	}
+}
+
+void ImageProcessing::morphOps(Mat &thresh){
+
+	//create structuring element that will be used to "dilate" and "erode" image.
+	//the element chosen here is a 3px by 3px rectangle
+	Mat erodeElement = getStructuringElement( MORPH_RECT,Size(3,3));
+	//dilate with larger element so make sure object is nicely visible
+	Mat dilateElement = getStructuringElement( MORPH_RECT,Size(8,8));
+
+	erode(thresh,thresh,erodeElement);
+	erode(thresh,thresh,erodeElement);
+
+	dilate(thresh,thresh,dilateElement);
+	dilate(thresh,thresh,dilateElement);
+}
+void ImageProcessing::trackFilteredObject(Mat threshold,Mat HSV, Mat &cameraFeed)
+{
+	vector <Object> objects;
+	Mat temp;
+	threshold.copyTo(temp);
+	//these two vectors needed for output of findContours
+	vector< vector<Point> > contours;
+	vector<Vec4i> hierarchy;
+	//find contours of filtered image using openCV findContours function
+	findContours(temp,contours,hierarchy,CV_RETR_CCOMP,CV_CHAIN_APPROX_SIMPLE );
+	//use moments method to find our filtered object
+	double refArea = 0;
+	bool objectFound = false;
+	if (hierarchy.size() > 0) {
+		int numObjects = hierarchy.size();
+
+		std::cout << "encontrou hiera: " << hierarchy.size() << " contorno: " << hierarchy[0][0] << std::endl;
+
+		//if number of objects greater than MAX_NUM_OBJECTS we have a noisy filter
+		if(numObjects<MAX_NUM_OBJECTS)
+		{
+			for (int index = 0; index >= 0; index = hierarchy[index][0])
+			{
+				Moments moment = moments((cv::Mat)contours[index]);
+				double area = moment.m00;
+				//if the area is less than 20 px by 20px then it is probably just noise
+				//if the area is the same as the 3/2 of the image size, probably just a bad filter
+				//we only want the object with the largest area so we safe a reference area each
+				//iteration and compare it to the area in the next iteration.
+				if(area>MIN_OBJECT_AREA && area<MAX_OBJECT_AREA )
+				{
+					Object object;
+
+					object.setXPos(moment.m10/area);
+					object.setYPos(moment.m01/area);
+
+					objects.push_back(object);
+
+					objectFound = true;
+
+				}
+				else objectFound = false;
+			}
+			//let user know you found an object
+			if(objectFound ==true)
+			{
+				//draw object location on screen
+				drawObject(objects,cameraFeed);
+			}
+		}
+		else putText(cameraFeed,"TOO MUCH NOISE! ADJUST FILTER",Point(0,50),1,2,Scalar(0,0,255),2);
+	}
+}
+
+bool ImageProcessing::trackFilteredObject(Object theObject,Mat threshold,Mat HSV, Mat &cameraFeed, vector<Object> &objects){
+
+	//vector <Object> objects;
+	Mat temp;
+	threshold.copyTo(temp);
+	//these two vectors needed for output of findContours
+	vector< vector<Point> > contours;
+	vector<Vec4i> hierarchy;
+	//find contours of filtered image using openCV findContours function
+	findContours(temp,contours,hierarchy,CV_RETR_CCOMP,CV_CHAIN_APPROX_SIMPLE );
+	//use moments method to find our filtered object
+	double refArea = 0;
+	bool objectFound = false;
+	if (hierarchy.size() > 0) {
+		int numObjects = hierarchy.size();
+
+		std::cout << "encontrou hiera: " << hierarchy.size() << " contorno: " << hierarchy[0][0] << std::endl;
+
+
+		//if number of objects greater than MAX_NUM_OBJECTS we have a noisy filter
+		if(numObjects<MAX_NUM_OBJECTS){
+			for (int index = 0; index >= 0; index = hierarchy[index][0]) {
+
+				Moments moment = moments((cv::Mat)contours[index]);
+				double area = moment.m00;
+
+		//if the area is less than 20 px by 20px then it is probably just noise
+		//if the area is the same as the 3/2 of the image size, probably just a bad filter
+		//we only want the object with the largest area so we safe a reference area each
+				//iteration and compare it to the area in the next iteration.
+				if(area>MIN_OBJECT_AREA && area<MAX_OBJECT_AREA){
+
+					Object object;
+
+					object.setXPos(moment.m10/area);
+					object.setYPos(moment.m01/area);
+					object.setType(theObject.getType());
+					object.setColor(theObject.getColor());
+
+					objects.push_back(object);
+
+					objectFound = true;
+
+				}else objectFound = false;
+			}
+			//let user know you found an object
+			if(objectFound ==true)
+			{
+				//draw object location on screen
+				//drawObject(objects,cameraFeed,temp,contours,hierarchy);
+				
+			}
+
+		}else putText(cameraFeed,"TOO MUCH NOISE! ADJUST FILTER",Point(0,50),1,2,Scalar(0,0,255),2);
+	}
+	return objectFound;
+}
+
+
+
+

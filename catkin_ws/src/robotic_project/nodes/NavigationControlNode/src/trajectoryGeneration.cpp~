@@ -1,0 +1,133 @@
+#include "trajectoryGeneration/trajectoryGeneration.h"
+
+
+
+TrajectoryGeneration::TrajectoryGeneration(ros::NodeHandle *rosNode_): rosNode(rosNode_)
+{
+     	g_window_name = std::string("TrajectoryGeneration");
+  	cv::namedWindow(g_window_name);
+	
+	cv::setMouseCallback(g_window_name, onMouse, this);
+
+	std::string topic = rosNode->resolveName("image");
+
+	image_transport::ImageTransport it(*rosNode);  	
+  	image_sub = it.subscribe(topic, 1,boost::bind(&TrajectoryGeneration::image_receive, this, _1));
+
+
+	poseArray_pub = rosNode->advertise<geometry_msgs::PoseArray>("/TrajectoryGeneration/poses", 1);
+		
+		
+
+	// Start the OpenCV window thread so we don't have to waitKey() somewhere
+  	cv::startWindowThread();
+
+}
+
+TrajectoryGeneration::~TrajectoryGeneration()
+{
+	cv::destroyWindow(g_window_name);
+}
+
+
+void TrajectoryGeneration::image_receive(const sensor_msgs::ImageConstPtr& msg)
+{
+  	boost::mutex::scoped_lock lock(g_image_mutex);
+
+  	try
+    	{
+      		g_last_image = cv_bridge::toCvShare(msg, "bgr8")->image;
+    	} catch(cv_bridge::Exception)
+    	{
+     		ROS_ERROR("Unable to convert %s image to bgr8", msg->encoding.c_str());
+      		//return false;
+    	}
+
+  	if (!g_last_image.empty()) 
+	{
+    		const cv::Mat &image = g_last_image;
+    		image_processing(image);
+    
+  	}
+}
+
+void TrajectoryGeneration::image_processing(const cv::Mat &image)
+{
+	
+	cv::Mat gray,src;	
+	src = image;
+
+	
+  	/// Draw the circles detected
+  	for( size_t i = 0; i < points.size(); i++ )
+  	{      		
+      		cv::circle( src, points[i], 3, cv::Scalar(0,255,0), -1, 8, 0 );      		
+   	}
+	
+	imageShow((const cv::Mat) src);
+
+}
+
+
+void TrajectoryGeneration::imageShow(const cv::Mat &image)
+{
+	//ROS_INFO("image show");
+	cv::imshow(g_window_name, image);
+	cv::waitKey(3);
+
+}
+
+
+void TrajectoryGeneration::onMouse(int event, int x, int y, int flag)
+{
+	ROS_INFO(" On MOuse... %d  %d %d ",flag, cv::EVENT_FLAG_CTRLKEY, cv::EVENT_FLAG_LBUTTON);
+	if ( flag == 33/*cv::EVENT_FLAG_LBUTTON*/ && event == cv::EVENT_MOUSEMOVE) 	
+	{
+    		ROS_INFO("Mouse CallBack, Size: %d - point.x: %d  point.y:%d ",(int)points.size(),x,y);
+		points.push_back(cv::Point2d(x,y));
+		    		
+  	}
+	if (event == cv::EVENT_RBUTTONDOWN) {
+		points.clear();
+		
+  	}
+
+	if ((flag == 40/*cv::EVENT_FLAG_CTRLKEY*/) && points.size() > 0)
+	{
+		ROS_INFO("Sending Trajectory...");
+		geometry_msgs::PoseStamped pose;
+		geometry_msgs::Quaternion orientation;
+
+		path.poses.clear(); // Clear last block perception result
+		path.header.stamp = ros::Time::now();
+		path.header.frame_id = "/vehicle_pose";
+		
+		for(size_t i = 0; i<points.size(); ++i)
+		{
+			//adding pose to pose array
+    			pose.pose.position.x = points[i].x;
+    			pose.pose.position.y = points[i].y;
+    			pose.pose.position.z = 0.0;
+			
+			//TODO Extracts pose orientation from two consecutives points.
+    			pose.pose.orientation = orientation;
+
+			// Add points to trajectory...
+    			path.poses.push_back(pose.pose);
+
+		}
+
+		poseArray_pub.publish(path);
+  		//ROS_INFO("Trajectory Points size: %i", path.poses.size()); 
+	}	
+
+}
+
+void TrajectoryGeneration::onMouse(int event, int x, int y, int flag, void* userdata)
+{
+	TrajectoryGeneration* trajectory = reinterpret_cast<TrajectoryGeneration*>(userdata);
+	trajectory->onMouse(event, x, y, flag);
+}
+
+
+

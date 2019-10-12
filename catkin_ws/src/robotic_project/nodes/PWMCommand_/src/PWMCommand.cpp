@@ -1,0 +1,160 @@
+//////////////////////////////////////////////////////////////////////////////////
+//  created:    2016/11/10 - 18:40
+//  filename:   PWMCommand.cpp
+//
+//  author:     Giovani Bernardes Vitor
+//              Copyright DEG / UFLA
+// 
+//  version:    $Id: $
+//
+//  purpose:
+//
+//////////////////////////////////////////////////////////////////////////////////
+#include <PWMCommand/PWMCommand.h>
+
+
+PWMCommand::PWMCommand(ros::NodeHandle *rosNode_): rosNode(rosNode_)
+{
+     	fd = open("/dev/servoblaster", O_WRONLY);
+	if(fd < 0){
+		ROS_ERROR("[Pi servo_driver] error opening servoblaster");
+		ros::shutdown();
+	}
+		
+	command_sub = rosNode->subscribe<std_msgs::Float32MultiArray>("/navigationControl/commands", 2,&PWMCommand::control_receive,this);
+	
+	received_time = ros::Time::now().toSec();
+	steering = prev_steering = speed = prev_speed = 0.0;
+	PWM_speed    = (int) signalspeed2PWM(0.0);
+	PWM_steering = (int) signalangle2PWM(0.0);
+
+
+	ROS_INFO(" PWMCommand correctly configured and running!");
+}
+
+PWMCommand::~PWMCommand()
+{
+	close(fd);
+}
+
+
+void PWMCommand::control_receive(const std_msgs::Float32MultiArray::ConstPtr& msg)
+{
+  	//received_time = msg->data[0];
+	received_time = ros::Time::now().toSec();
+	prev_steering = steering;
+	steering      = msg->data[1];
+	prev_speed    = speed;
+	speed         = msg->data[2];
+	
+	convertControlToPWM(steering, speed);
+
+	//ROS_INFO(" Received Steering: %f , Speed: %f ",steering, speed );
+  	
+}
+
+
+void PWMCommand::convertControlToPWM(float steering, float speed)
+{
+  	float angle = steering*180.0/3.1416;
+	
+  	PWM_speed    = (int) signalspeed2PWM(speed);
+	PWM_steering = (int) signalangle2PWM(angle);
+	
+	ROS_INFO(" convertControlToPWM function speed [%f] - [%d] steering [%f] - [%d] ",speed,PWM_speed,angle,PWM_steering);
+}
+
+
+float PWMCommand::getSteering()
+{
+	return steering;
+}
+float PWMCommand::getSpeed()
+{
+	return speed;
+}
+int PWMCommand::getPWMsteering()
+{
+	return PWM_steering;
+}
+int PWMCommand::getPWMspeed()
+{
+	return PWM_speed;
+}
+
+double PWMCommand::getReceived_InfoTime()
+{
+	return received_time;
+}
+
+void PWMCommand::setSpeed(float value)
+{
+	speed = value;
+	convertControlToPWM(steering, speed);
+	
+}
+
+
+bool PWMCommand::send_PWM(int servo, int value)
+{
+  	
+	//ROS_INFO(" send_PWM ... ");
+		
+	sprintf(buf, "%d=%d\n", servo, value);
+	
+	int n = strlen(buf);
+	if (write(fd, buf, n) != n)
+	{
+		fprintf(stderr, "Failed to set %s: %s\n", buf, strerror(errno));
+		return false;
+	}
+  	return true;
+}
+
+double PWMCommand::signalspeed2PWM(double speed) //Função da velocidade
+{	
+	double PWM_speed;
+	
+	double pow1 = speed;
+	double pow2 = pow1*speed;
+	double pow3 = pow2*speed;
+	double pow4 = pow3*speed;
+
+	if (speed >= 2.5 && speed <= 6.0){
+		PWM_speed = (0.4226*pow4) + (-8.1432*pow3) + (55.1610*pow2) + (-160.1097*pow1) + (291.9075);
+
+	}
+
+	else if (speed <=-2.5 && speed >= -6.0){
+		PWM_speed = (-0.9090*pow4) + (-18.3901*pow3) + (-133.2494*pow2) + (-416.97*pow1) + (-337.8756);
+	}
+
+	else{
+		PWM_speed = 130;
+	}
+
+	return floor(PWM_speed);
+}
+
+double PWMCommand::signalangle2PWM(double angle) // Função do angulo de esterçamento
+{	
+	double PWM_angle;
+	
+	double pow1 = angle;
+	double pow2 = pow1*angle;
+	double pow3 = pow2*angle;
+	double pow4 = pow3*angle;
+	
+	PWM_angle = (-0.0000077316*pow4) + (-0.0001133*pow3) + (0.0074*pow2) + (1.4111*pow1) + (140.0622);
+
+	if (angle > 30){
+		PWM_angle = 180;
+	}
+	
+	if (angle < -30){
+		PWM_angle = 100;
+	}
+
+	return floor(PWM_angle);
+
+}

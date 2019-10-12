@@ -1,0 +1,648 @@
+/*
+ * RoadLineProcessing.cpp
+ *
+ *  Created on: FEV 24, 2018
+ *      Author: giovani
+ */
+
+#include <stdio.h>
+
+#include "Road_Line_Processing.hpp"
+#include <fstream> // std::fstream
+
+#define DEBUG
+#define GRAU_1
+
+void linreg(const std::vector<double> x, const std::vector<double> y, double &m, double &b);
+std::string format(const char *const format, ...);
+void invert_point(cv::Point2f *start, cv::Point2f *end);
+// cv::Mat getPerspective(cv::Mat input, cv::Point2f*, cv::Point2f*);
+// cv::Mat revertPerspective(cv::Mat input, cv::Point2f*, cv::Point2f*);
+cv::Mat PerspectiveWarp_ColorFilter(cv::Mat input, cv::Mat lambda);
+
+bool inOffset(std::vector<double> coeffs, cv::Point2f p);
+
+/**
+@brief constructor of class with initi with default parameters
+@TODO: use rosparam to configure the parameters
+**/
+RoadLineProcessing::RoadLineProcessing(ros::NodeHandle nh)
+{
+
+	desired_line = new cv::Mat_<float>(5, 1);
+	error_control = new cv::Mat_<float>(2, 1);
+
+	offset = new cv::Mat_<float>(2, 1);
+
+	p_y = 90;
+
+	// Vector Information: [0]:a, [1]:b, [2]:c || a + bx + cx²
+	previous_poly.resize(4);
+	previous_poly[0] = 160.0;
+	previous_poly[1] = 0.0;
+	previous_poly[2] = 0.0;
+	previous_poly[3] = previous_poly[1] + 2 * previous_poly[2] * p_y;
+
+	process_stage = false;
+	initializer = false;
+
+	// Point Information (x, y) // Image Size : 320 x 128
+	cv::Point2f start(160, 0), end(160, 128);
+
+	float m = (double)(end.x - start.x) / (end.y - start.y); // 0
+	float b = (double)start.x - m * start.y;								 // 160
+
+	float desired_y = 128.0;
+	float desired_x = m * desired_y + b; // 160
+
+	// Vector Information: [0]:x, [1]:y, [2]:m, [3]:b
+	(*desired_line)(0) = desired_x;
+	(*desired_line)(1) = desired_y;
+	(*desired_line)(2) = m;
+	(*desired_line)(3) = b;
+
+	ex_ant = 0;
+	ex_sum = 0;
+
+	dt_ctr = ros::Time::now().toSec();
+	t_ant = ros::Time::now().toSec();
+	t_res = ros::Time::now().toSec();
+
+	//Poderar a filtragem temporal
+	sigma = 0.10;		 // sigma    = 0.65;
+	sigma_x = 0.10;	// sigma_x  = 0.65;
+	sigma_xx = 0.10; // sigma_xx = 0.65;
+
+	// nh.param("k_p", kp, 0.0015);
+	nh.param("k_p", kp, 0.03);
+	nh.param("k_i", ki, 0.00);
+	nh.param("k_d", kd, 0.00);
+
+	v_set = 1.70;
+	dt_v = 0.0;
+
+	velocity = 1.66;
+	ctr_sp = 0;
+
+	GB_Size = 5;
+	weight = 0.5;
+
+	std::cout << "ki: " << ki << " kd: " << kd << " kp: " << kp << std::endl;
+
+#ifdef DEBUG
+	cv::namedWindow("original view");
+	cv::namedWindow("img_threshold");
+	cv::startWindowThread();
+#endif
+};
+
+RoadLineProcessing::~RoadLineProcessing()
+{
+	free((void *)image);
+	delete (desired_line);
+
+#ifdef DEBUG
+	cv::destroyWindow("original view");
+	cv::destroyWindow("img_threshold");
+#endif
+}
+
+void RoadLineProcessing::imageCallback(const sensor_msgs::ImageConstPtr &msg)
+{
+	try
+	{
+		cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+		line_detection(cv_ptr->image);
+	}
+	catch (cv_bridge::Exception &e)
+	{
+		ROS_ERROR("Could not convert from '%s' to 'bgr8'.", msg->encoding.c_str());
+	}
+}
+
+void RoadLineProcessing::imgConfig(int X, int Y)
+{
+	width_image = X;
+	heigh_image = Y;
+
+	Hor_line_thresh = Y * 0;
+
+	image = (double *)malloc((size_t)(X * Y) * sizeof(double));
+
+	process_stage = true;
+}
+
+void RoadLineProcessing::line_detection(cv::Mat img)
+{
+	this->p_y = 115;
+
+	if (process_stage == false)
+	{
+		imgConfig(img.cols, img.rows);
+	}
+
+	img.copyTo(this->o_img);
+
+	cv::Point2f inputQuad[4];
+	cv::Point2f outputQuad[4];
+
+	inputQuad[0] = cv::Point2f(peso2, peso1);
+	inputQuad[1] = cv::Point2f(img.cols - 1 - peso2, peso1);
+	inputQuad[2] = cv::Point2f(img.cols - 1, img.rows - 1);
+	inputQuad[3] = cv::Point2f(0, img.rows - 1);
+
+	outputQuad[0] = cv::Point2f(0, 0);
+	outputQuad[1] = cv::Point2f(img.cols - 1, 0);
+	outputQuad[2] = cv::Point2f(img.cols - 1, img.rows - 1);
+	outputQuad[3] = cv::Point2f(0, img.rows - 1);
+
+	this->lambda = cv::getPerspectiveTransform(inputQuad, outputQuad);
+	this->r_lambda = cv::getPerspectiveTransform(outputQuad, inputQuad);
+
+	for (auto p : inputQuad)
+	{
+		cv::circle(o_img, p, 10, cv::Scalar(0, 255, 255), -1, 8);
+		// cv::circle(img_threshold, p, 10, cv::Scalar(0, 255, 255), -1, 8);
+	}
+
+	for (auto p : outputQuad)
+	{
+		cv::circle(o_img, p, 10, cv::Scalar(255, 255, 0), -1, 8);
+		// cv::circle(img_threshold, p, 10, cv::Scalar(255, 255, 0), -1, 8);
+	}
+
+	img = PerspectiveWarp_ColorFilter(img, this->lambda);
+
+	cv::imshow("view", img);
+	// cv::GaussianBlur(img, img, cv::Size(GB_Size, GB_Size), 0, 0);
+
+#ifdef DEBUG
+	cv::warpPerspective(o_img, o_img, this->lambda, o_img.size());
+	cv::Mat img_threshold(cv::Size(width_image, heigh_image), CV_8UC1, cv::Scalar(0));
+#endif
+
+	double temp = ros::Time::now().toSec() - dt_ctr;
+	printf("\033[2J\t%2d.%02d Hz\t%.2f s\n\tline Detection Inicialized...", (int)(1.0 / (temp)), (int)(((1.0 / (temp)) - (int)(1.0 / (temp))) * 100), temp);
+	dt_ctr = ros::Time::now().toSec();
+
+	std::map<int, double> used_lines;
+	int dim = 7;
+
+	cv::Point2f start, end;
+	cv::Vec3b intensity;
+
+	unsigned int x, y, i;
+	unsigned int X = img.cols; /* x image size */
+	unsigned int Y = img.rows; /* y image size */
+
+	// Send command to move the car
+	speed_control(ctr_sp);
+
+	// Filter imge y-> hight x-> width
+	for (y = Hor_line_thresh; y < Y; y++)
+		for (x = 0; x < img.cols; x++)
+		{
+			intensity = img.at<cv::Vec3b>(y, x);
+
+#ifdef DEBUG
+			img_threshold.at<uchar>(y, x) = 255;
+#endif
+			// image[x + y * X] = (intensity.val[0] + intensity.val[1] + intensity.val[2]) / 3.0;
+			image[x + y * X] = intensity.val[0];
+		}
+//Lines of offset
+#ifdef DEBUG
+	img.copyTo(img_threshold);
+#endif
+	/* LSD call */
+
+	int n = 0;
+
+	double *out = LineSegmentDetection(&n, image, X, Y,
+																		 0.8,	// scale
+																		 0.6,	// sigma_coef
+																		 2.0,	// quant
+																		 22.5, // "ang_th"),
+																		 0.0,	// "log_eps"),
+																		 0.7,	//"density_th"),
+																		 1024, // "n_bins"),
+																		 NULL,
+																		 NULL, NULL);
+	double m, b;
+	int n_used = 0;
+
+	std::vector<double> xv;
+	std::vector<double> yv;
+
+	for (i = 0; i < n; i++)
+	{
+		start = cv::Point2d(out[i * dim + 0], out[i * dim + 1]);
+		end = cv::Point2d(out[i * dim + 2], out[i * dim + 3]);
+
+		if (initializer)
+			if (!inOffset(previous_poly, start) || !inOffset(previous_poly, end))
+				continue;
+
+		invert_point(&start, &end);
+
+		m = (double)(end.x - start.x) / (end.y - start.y);
+
+		if (std::isinf(m))
+			continue;
+
+		// if (std::abs(m) > 1)
+		// 	continue;
+
+		b = (double)start.x - m * start.y;
+
+		for (double i = start.y; i <= end.y; i += end.y / 100.0)
+		{
+			// cv::circle(img_threshold, cv::Point(b + m * i, i), 1, cv::Scalar(0, 0, 255), -1, 8);
+
+			xv.push_back((double)(b + m * i));
+			yv.push_back((double)i);
+		}
+
+		cv::line(img_threshold, start, end, cv::Scalar(255, 255, 255), 2, 8);
+
+		n_used++;
+		used_lines[i + 1] = m;
+
+#ifdef DEBUG
+		cv::line(o_img, start, end, cv::Scalar(255, 0, 255), 1, 8);
+#endif
+	}
+
+	printf(" Detected Image Lines =  %d  \n", (int)used_lines.size());
+
+	if (!used_lines.empty())
+	{
+		std::vector<double> coeff;
+
+		polyFit<double>().fitIt(yv, xv, 2, coeff);
+
+		start.y = 0;
+		start.x = coeff[0] + coeff[1] * start.y + coeff[2] * start.y * start.y;
+
+		end.y = heigh_image;
+		end.x = coeff[0] + coeff[1] * end.y + coeff[2] * end.y * end.y;
+
+		coeff.resize(4);
+
+		coeff[3] = coeff[1] + 2 * coeff[2] * this->p_y;
+
+		for (double i = 0; i < heigh_image; i += heigh_image / 10.0)
+		{
+			double j = i + heigh_image / 10.0;
+
+			cv::line(img_threshold,
+							 cv::Point(coeff[0] + coeff[1] * i + coeff[2] * i * i, i),
+							 cv::Point(coeff[0] + coeff[1] * j + coeff[2] * j * j, j),
+							 cv::Scalar(255, 0, 0), 2, 8);
+		}
+
+		if (initializer)
+			temporal_line_filtering(&start, &end, &previous_poly, &coeff, this->weight);
+		else
+			init_temporal_line_filtering(&start, &end, &previous_poly, &coeff);
+	}
+	else
+	{
+		start.y = 0;
+		start.x = previous_poly[0] + previous_poly[1] * start.y + previous_poly[2] * start.y * start.y;
+
+		end.y = heigh_image;
+		end.x = previous_poly[0] + previous_poly[1] * end.y + previous_poly[2] * end.y * end.y;
+	}
+
+	invert_point(&start, &end);
+
+	if (t_ant - t_res > 3.0)
+		reset(&start, &end);
+
+#ifdef DEBUG //	Linha LARANJA
+
+	for (double i = 0; i < heigh_image; i += heigh_image / 100.0)
+	{
+		double j = i + heigh_image / 100.0;
+
+		cv::line(img_threshold,
+						 cv::Point2f(previous_poly[0] + previous_poly[1] * i + previous_poly[2] * i * i - 50, i),
+						 cv::Point2f(previous_poly[0] + previous_poly[1] * j + previous_poly[2] * j * j - 50, j),
+						 cv::Scalar(100, 100, 100), 2, 8);
+
+		cv::line(img_threshold,
+						 cv::Point(previous_poly[0] + previous_poly[1] * i + previous_poly[2] * i * i, i),
+						 cv::Point(previous_poly[0] + previous_poly[1] * j + previous_poly[2] * j * j, j),
+						 cv::Scalar(255, 0, 255), 1, 8);
+
+		cv::line(img_threshold,
+						 cv::Point2f(previous_poly[0] + previous_poly[1] * i + previous_poly[2] * i * i + 50, i),
+						 cv::Point2f(previous_poly[0] + previous_poly[1] * j + previous_poly[2] * j * j + 50, j),
+						 cv::Scalar(250, 250, 250), 2, 8);
+	}
+
+#endif
+
+	std::cout << "\n\tline Detection Finished... " << std::endl;
+
+	cv::Point2f p(previous_poly[0] + previous_poly[1] * this->p_y + previous_poly[2] * this->p_y * this->p_y, this->p_y);
+
+	this->steering = visual_servoing_control(p, atan(previous_poly[3]));
+
+#ifdef DEBUG
+
+	int pos = 0;
+	cv::Scalar scalar = cv::Scalar(0, 255, 0);
+	std::stringstream ss;
+
+	//Desired Line
+	cv::line(o_img,
+					 cv::Point2f((*desired_line)(0), (*desired_line)(1)),
+					 cv::Point2f((*desired_line)(0), 0), cv::Scalar(255, 0, 255), 1, 8);
+
+	//Observed Point
+	cv::circle(o_img, p, 1, cv::Scalar(0, 255, 0), -1, 8);
+	cv::circle(img_threshold, p, 1, cv::Scalar(0, 255, 0), -1, 8);
+
+	cv::warpPerspective(o_img, o_img, this->r_lambda, o_img.size());
+
+	cv::line(img_threshold,
+					 cv::Point2f(previous_poly[3] * (this->p_y + 20 - p.y) + p.x, this->p_y + 20),
+					 cv::Point2f(previous_poly[3] * (this->p_y - 20 - p.y) + p.x, this->p_y - 20), cv::Scalar(0, 255, 0), 1, 8);
+
+	ss.str(std::string());
+	ss << format("slope: %3.3f", previous_poly[3]);
+	cv::putText(img_threshold, ss.str().c_str(), cv::Point2d(p.x + 5, p.y), cv::FONT_HERSHEY_SIMPLEX, 0.35, cv::Scalar(255, 255, 255), 1);
+
+	ss.str(std::string());
+	ss << format("Delta[rad]: %.3f Delta[deg]: %.2f", this->steering, this->steering * 180.0 / M_PI);
+	cv::putText(o_img, ss.str().c_str(), cv::Point2d(10, pos += 10), cv::FONT_HERSHEY_SIMPLEX, 0.35, scalar, 1);
+	cv::putText(img_threshold, ss.str().c_str(), cv::Point2d(10, pos), cv::FONT_HERSHEY_SIMPLEX, 0.35, cv::Scalar(255, 255, 255), 1);
+
+	ss.str(std::string());
+	ss << format("Error_control: %.3f", (*error_control)(0));
+	cv::putText(o_img, ss.str().c_str(), cv::Point2d(10, pos += 10), cv::FONT_HERSHEY_SIMPLEX, 0.35, scalar, 1);
+
+	ss.str(std::string());
+	ss << format("weight: %.3f t_res = %.2f", this->weight, t_ant - t_res);
+	cv::putText(o_img, ss.str().c_str(), cv::Point2d(10, pos += 10), cv::FONT_HERSHEY_SIMPLEX, 0.35, scalar, 1);
+
+	ss.str(std::string());
+	ss << "ctr_sp: " << (ctr_sp);
+	cv::putText(o_img, ss.str().c_str(), cv::Point2d(10, pos += 10), cv::FONT_HERSHEY_SIMPLEX, 0.35, scalar, 1);
+
+	ss.str(std::string());
+	ss << format("v: %0.3f dt_v: %0.3f", velocity, dt_v);
+	cv::putText(o_img, ss.str().c_str(), cv::Point2d(10, pos += 10), cv::FONT_HERSHEY_SIMPLEX, 0.35, scalar, 1);
+
+	ss.str(std::string());
+	ss << format("%3.2f", peso1);
+	cv::putText(o_img, ss.str().c_str(), cv::Point2d(200, 120), cv::FONT_HERSHEY_SIMPLEX, 1, scalar, 1);
+	cv::putText(img_threshold, ss.str().c_str(), cv::Point2d(200, 120), cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(255, 255, 255), 1);
+
+	ss.str(std::string());
+	ss << format("%3.2f", peso2);
+	cv::putText(o_img, ss.str().c_str(), cv::Point2d(200, 50), cv::FONT_HERSHEY_SIMPLEX, 1, scalar, 1);
+	cv::putText(img_threshold, ss.str().c_str(), cv::Point2d(200, 50), cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(255, 255, 255), 1);
+
+	cv::imshow("original view", o_img);
+	cv::imshow("img_threshold", img_threshold);
+
+	cv::waitKey(3);
+#endif
+
+	free((void *)out);
+}
+
+void RoadLineProcessing::reset(cv::Point2f *start, cv::Point2f *end)
+{
+	// *start = cv::Point2f(this->width_image/2, 0);
+	// *end = cv::Point2f(this->width_image/2, this->heigh_image);
+
+	this->initializer = false;
+	this->t_res = ros::Time::now().toSec();
+	this->ctr_sp = 0;
+
+	std::cout << "\n\nRESET\n\n";
+}
+
+void RoadLineProcessing::speed_control(int gs)
+{
+	double dt = ros::Time::now().toSec() - t_ant;
+	dt_v += dt;
+
+	printf("\n\tvel: %.2f gs: %2d dt: %.2f\n\n", this->velocity, gs, dt_v);
+
+	if ((velocity == v_set && std::abs(this->steering) >= 0.4) && dt_v > 3)
+	{
+		velocity = 1.72;
+		dt_v = 0.0;
+	}
+	else if (gs)
+	{
+		if (velocity >= v_set)
+		{
+			velocity = v_set;
+			dt_v = 0.0;
+		}
+		else if (dt_v > 0.1)
+		{
+			velocity += 0.005;
+			dt_v = 0.0;
+		}
+	}
+	else
+	{
+		velocity = 1.69;
+		dt_v = 0.0;
+	}
+}
+
+void RoadLineProcessing::init_temporal_line_filtering(cv::Point2f *start, cv::Point2f *end, std::vector<double> *p_coeffs, std::vector<double> *coeffs)
+{
+	//fix the desired line equation
+	//find line equation
+
+	printf("\n\tInit_temporal_line_filtering\n\n");
+
+	*p_coeffs = *coeffs;
+
+	start->y = 0;
+	start->x = (*p_coeffs)[0] + (*p_coeffs)[1] * start->y + (*p_coeffs)[2] * start->y * start->y;
+
+	end->y = heigh_image;
+	end->x = (*p_coeffs)[0] + (*p_coeffs)[1] * end->y + (*p_coeffs)[2] * end->y * end->y;
+
+	this->initializer = true;
+}
+
+void RoadLineProcessing::temporal_line_filtering(cv::Point2f *start, cv::Point2f *end, std::vector<double> *p_coeffs, std::vector<double> *coeffs, double &weight)
+{
+
+	printf("\n\tTemporal_line_filtering\t%.2f\n\n", std::abs((*coeffs)[3] - (*p_coeffs)[3]));
+
+	printf("%.2f %.2fx %.4fx^2\n", (*coeffs)[0], (*coeffs)[1], (*coeffs)[2]);
+	printf("%.2f %.2fx %.4fx^2\n", (*p_coeffs)[0], (*p_coeffs)[1], (*p_coeffs)[2]);
+
+	printf("\n%.2f %.2fx %.4fx^2\n", (*p_coeffs)[0] - (*coeffs)[0], (*p_coeffs)[1] - (*coeffs)[1], (*coeffs)[2] - (*p_coeffs)[2]);
+
+	//fix the desired line equation
+
+	if (ctr_sp)
+		ctr_sp--;
+
+	if (std::abs((*coeffs)[3] - (*p_coeffs)[3]) < std::abs(weight) && (!std::isnan((*coeffs)[3]) || !std::isnan((*p_coeffs)[3]) ||
+																																		 !std::isinf((*coeffs)[3]) || !std::isinf((*p_coeffs)[3])))
+	{
+		if (ctr_sp < 8)
+			ctr_sp += 2;
+
+		t_res = ros::Time::now().toSec();
+		(*p_coeffs)[0] = sigma * (*p_coeffs)[0] + (1 - sigma) * (*coeffs)[0];
+		(*p_coeffs)[1] = sigma_x * (*p_coeffs)[1] + (1 - sigma_x) * (*coeffs)[1];
+		(*p_coeffs)[2] = sigma_xx * (*p_coeffs)[2] + (1 - sigma_xx) * (*coeffs)[2];
+
+		(*p_coeffs)[3] = (*p_coeffs)[1] + 2 * (*p_coeffs)[2] * this->p_y;
+	}
+	else
+	{
+		printf("\n\tLine not updated\n");
+	}
+
+	start->y = 0;
+	start->x = (*p_coeffs)[0] + (*p_coeffs)[1] * start->y + (*p_coeffs)[2] * start->y * start->y;
+
+	end->y = heigh_image;
+	end->x = (*p_coeffs)[0] + (*p_coeffs)[1] * end->y + (*p_coeffs)[2] * end->y * end->y;
+}
+
+double RoadLineProcessing::visual_servoing_control(cv::Point2f observed_pt, float observed_angle)
+{
+
+	////////////////////////////////////////////////////////////////////////////////////////////////////
+	// VISUAL SERVOING CONTROL
+	////////////////////////////////////////////////////////////////////////////////////////////////////
+
+	double u, dt = 0;
+	u = ros::Time::now().toSec();
+	dt = u - t_ant;
+	t_ant = u;
+
+	(*error_control)(0) = (*desired_line)(0) - observed_pt.x; // estimated X error
+
+	ex_sum += (*error_control)(0) * dt; //integral
+
+	ex_sum = std::max(-40.0, std::min(ex_sum, 40.0)); //stauration integral
+
+	u = (*error_control)(0) * kp + kd * ((*error_control)(0) - ex_ant) / dt + ki * ex_sum;
+	ex_ant = (*error_control)(0);
+	(*error_control)(0) = u;
+	(*error_control)(1) = (atan((*desired_line)(2)) - observed_angle) * kp;
+
+	double lambda = 1;
+	double pho = 30.0 * M_PI / 180.0; // radians
+	double ty = 0.06f;								//0.13f;	//1.4f;	// meters
+	double tz = 0.12f;								//0.23f;	//2.2f;	// meters
+	double v = 2.0f;									// m/s
+	double c_x = 160.00;							//320.00;	//389.6477;
+	double c_y = 64.00;								//240.00;	//137.8856;
+
+	double delta = controller(0.0,								 //(*desired_line)(4), // Theta reference
+														0.0,								 // X point reference
+														0.0,								 // Y point reference
+														(*error_control)(1), // theta error
+														(*error_control)(0), //  X error
+														lambda,							 // lambda paramenter of the controller
+														pho,								 // pho: tilt angle of the camera
+														ty,									 // y axis translation to camera reference
+														tz,									 // z axis translation to camera reference
+														v										 // speed...
+	);
+	// delta = -delta;
+
+	delta = std::max((double)-0.6, std::min(delta, (double)0.6)); // 0.6[rad] 34,3775[graus]
+	std::cout << " Time DeltaT (dt) : " << dt << "\n Desired_point: " << cv::Point2f((*desired_line)(0), (*desired_line)(1)) << " Desired Angle: " << atan((*desired_line)(2)) * 180 / M_PI << "\n Observerd_pt: " << observed_pt << " Observed Angle: " << observed_angle * 180 / M_PI << "\n ERROR (X): " << (*desired_line)(0) - observed_pt.x << " (theta) " << (atan((*desired_line)(2)) - observed_angle) << "\n Delta: " << delta * 180 / M_PI << " [degree] \n delta: " << delta << " [rad] " << std::endl;
+
+	//return driver_wheel;
+	return delta; // [rad]
+}
+
+// ==========================================================================================================================
+//  Funcoes auxiliares
+// ==========================================================================================================================
+
+void invert_point(cv::Point2f *start, cv::Point2f *end)
+{
+	if (end->y < start->y)
+	{
+		start->x += end->x;
+		end->x = start->x - end->x;
+		start->x -= end->x;
+
+		start->y += end->y;
+		end->y = start->y - end->y;
+		start->y -= end->y;
+	}
+}
+
+/* Formata String */
+
+std::string format(const char *const format, ...)
+{
+	auto temp = std::vector<char>{};
+	auto length = std::size_t{63};
+	std::va_list args;
+	while (temp.size() <= length)
+	{
+		temp.resize(length + 1);
+		va_start(args, format);
+		const auto status = std::vsnprintf(temp.data(), temp.size(), format, args);
+		va_end(args);
+		if (status < 0)
+			throw std::runtime_error{"string formatting error"};
+		length = static_cast<std::size_t>(status);
+	}
+	return std::string{temp.data(), length};
+}
+
+/* Perspective Warp */
+
+cv::Mat PerspectiveWarp_ColorFilter(cv::Mat input, cv::Mat lambda)
+{
+
+	cv::warpPerspective(input, input, lambda, input.size());
+
+	cv::Mat HSV_filter;
+	cv::cvtColor(input, input, cv::COLOR_BGR2HSV);
+
+	cv::inRange(input, cv::Scalar(0, 0, 0), cv::Scalar(180, 100, 70), HSV_filter);
+
+	// cv::inRange(input, cv::Scalar(0, 0, 0), cv::Scalar(180, 100, 70), input);
+
+	// cv::inRange(input, cv::Scalar(0, 80, 0), cv::Scalar(255, 255, 255), HSV_filter);
+
+	// cv::bitwise_not(HSV_filter, HSV_filter);
+
+	// cv::cvtColor(input, input, cv::COLOR_HSV2BGR);
+	// cv::cvtColor(HSV_filter, HSV_filter, cv::COLOR_GRAY2BGR);
+
+	// cv::bitwise_and(input, HSV_filter, input);
+
+	// cv::cvtColor(input, input, cv::COLOR_HSV2BGR);
+
+	return HSV_filter;
+}
+
+double inline st(double x)
+{
+	return sqrt((pow(x, 2)) + 1);
+}
+
+bool inOffset(std::vector<double> coeffs, cv::Point2f p)
+{
+	double l = (coeffs)[0] + (coeffs)[1] * p.y + (coeffs)[2] * p.y * p.y - 50,
+				 r = (coeffs)[0] + (coeffs)[1] * p.y + (coeffs)[2] * p.y * p.y + 50;
+
+	return (p.x > l && p.x < r) ? true : false;
+}

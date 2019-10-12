@@ -1,0 +1,92 @@
+//////////////////////////////////////////////////////////////////////////////////
+//  created:    2016/11/10 - 18:40
+//  filename:   PWMCommand.cpp
+//
+//  author:     Giovani Bernardes Vitor
+//              Copyright DEG / UFLA
+// 
+//  version:    $Id: $
+//
+//  purpose:
+//
+//////////////////////////////////////////////////////////////////////////////////
+#include <PWMCommand/PWMCommand.h>
+
+
+PWMCommand::PWMCommand(ros::NodeHandle *rosNode_): rosNode(rosNode_)
+{
+     	//fd = open("/dev/servoblaster", O_WRONLY);
+	//if(fd < 0){
+	//	ROS_ERROR("[Pi servo_driver] error opening servoblaster");
+	//	ros::shutdown();
+	//}
+		
+	command_sub = rosNode->subscribe<std_msgs::Float32MultiArray>("/navigationControl/commands", 2,&PWMCommand::control_receive,this);
+	
+	ROS_INFO(" PWMCommand correctly configured and running!");
+}
+
+PWMCommand::~PWMCommand()
+{
+	close(fd);
+}
+
+
+void PWMCommand::control_receive(const std_msgs::Float32MultiArray::ConstPtr& msg)
+{
+  	
+	prev_steering = steering;
+	steering      = msg->data[1];
+	prev_speed    = speed;
+	speed         = msg->data[2];
+	
+	ROS_INFO(" Received Steering: %f , Speed: %f ",steering, speed );
+  	
+}
+
+
+void PWMCommand::convertControlToPWM(float steering, float speed)
+{
+  	
+	ROS_INFO(" convertControlToPWM function ... ");
+  	
+}
+
+
+float PWMCommand::getSteering()
+{
+	return steering;
+}
+float PWMCommand::getSpeed()
+{
+	return speed;
+}
+int PWMCommand::getPWMsteering()
+{
+	return PWM_steering;
+}
+int PWMCommand::getPWMspeed()
+{
+	return PWM_speed;
+}
+
+bool PWMCommand::send_PWM(int servo, int value)
+{
+  	
+	ROS_INFO(" send_PWM ... ");
+		
+	sprintf(buf, "%d=%d\n", servo, value);
+	
+	int n = strlen(buf);
+	if (write(fd, buf, n) != n)
+	{
+		fprintf(stderr, "Failed to set %s: %s\n", buf, strerror(errno));
+		return false;
+	}
+  	return true;
+}
+
+
+
+
+

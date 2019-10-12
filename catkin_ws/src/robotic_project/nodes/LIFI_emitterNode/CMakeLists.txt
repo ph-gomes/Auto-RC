@@ -1,0 +1,27 @@
+cmake_minimum_required(VERSION 2.8.3)
+
+
+
+##################################################################################################
+#  LIFI_receiver Node
+##################################################################################################
+SET(NODE_NAME LIFI_emitter)
+
+SET( NODE_SRC_CODE
+	src/LIFI_emitter_node.cpp	
+	src/LIFI_emitter.cpp
+)
+
+
+## Declare a C++ executable
+ add_executable(${NODE_NAME} ${NODE_SRC_CODE})
+
+## Add cmake target dependencies of the executable
+## same as for the library above
+# add_dependencies(rosmorse_example_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
+## Specify libraries to link a library or executable target against
+ target_link_libraries(${NODE_NAME}
+   ${catkin_LIBRARIES}
+ )
+

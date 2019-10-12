@@ -1,0 +1,25 @@
+<launch>
+	<!-- Control settings  -->
+	<arg name="kp" default="0.015" />
+	<arg name="ki" default="0" />
+	<arg name="kd" default="0" />
+	<arg name="speed" default="2.4" />
+
+
+
+	<param name="k_p" value="$(arg kp)"/>
+	<param name="k_i" value="$(arg ki)"/>
+	<param name="k_d" value="$(arg kd)"/>
+	<param name="speed_" value="$(arg speed)"/>
+
+	<!-- <node name="cv_camera"  pkg="robotic_project" type="cv_cameraNode" /> -->
+	
+	
+	<node name="virtualGPS" 	  pkg="robotic_project" type="VirtualGPSNode"       args="image:=/pg_15370651/image_raw" />
+	<node name="trajectoryGeneration" pkg="robotic_project" type="trajectoryGeneration" args="image:=/pg_15370651/image_raw" />  	
+	<node name="navigationControl" pkg="robotic_project" type="navigationControl" args="image:=/pg_15370651/image_raw" />
+
+	<!-- <node name="PWMCommand" pkg="robotic_project" type="PWMCommand" /> 
+	<node name="LIFI_receiver" pkg="robotic_project" type="LIFI_receiver" />
+	<node name="LIFI_emitter" pkg="robotic_project" type="LIFI_emitter" /> -->
+</launch>

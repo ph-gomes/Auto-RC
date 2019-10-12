@@ -1,0 +1,58 @@
+//////////////////////////////////////////////////////////////////////////////////
+//  created:    2016/11/10 - 18:40
+//  filename:   LIFI_emitter.cpp
+//
+//  author:     Giovani Bernardes Vitor
+//              Copyright DEG / UFLA
+// 
+//  version:    $Id: $
+//
+//  purpose:
+//
+//////////////////////////////////////////////////////////////////////////////////
+#include <LIFI_emitter/LIFI_emitter.h>
+
+
+LIFI_emitter::LIFI_emitter(ros::NodeHandle *rosNode_): rosNode(rosNode_)
+{
+     	
+	ROS_INFO(" LIFI_emitter correctly configured and running!");
+}
+
+LIFI_emitter::~LIFI_emitter()
+{
+
+}
+
+void LIFI_emitter::start_emitter()
+{
+	
+	ROS_INFO(" Starting signal emitter...!");
+
+	
+
+}
+void LIFI_emitter::codification_process()
+{
+  	ROS_INFO(" Performs signal codification ... " );
+  	
+}
+
+
+bool LIFI_emitter::send_info()
+{
+  	
+	ROS_INFO(" send_info ... ");
+		
+	command.data[0] = ros::Time::now().toSec(); // Timestamp
+	command.data[1] = info; 
+
+	this->command_pub.publish(command);
+
+  	return true;
+}
+
+
+
+
+

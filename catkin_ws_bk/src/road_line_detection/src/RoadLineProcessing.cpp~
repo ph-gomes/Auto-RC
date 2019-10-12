@@ -1,0 +1,865 @@
+/*
+ * RoadLineProcessing.cpp
+ *
+ *  Created on: Oct 26, 2015
+ *      Author: giovani
+ */
+
+
+
+#include <stdio.h>
+
+#include "RoadLineProcessing.hpp"
+
+
+/**
+@brief constructor of class with initi with default parameters
+@TODO: use rosparam to configure the parameters
+**/
+RoadLineProcessing::RoadLineProcessing(ros::NodeHandle nh){
+   //width_filter=clip<double>(0.00,0,1); //low pass
+   //max_filter=clip<double>(0.8,0,1);  //high pass
+   //histogram_filter=clip<double>(0.5,0,1);
+
+   //width_road_m=3.2;
+   //line_resolution=0.03;
+
+   //pubJoystickMA = nh.advertise<std_msgs::Float64MultiArray>("/vilma_ma_ros/joystick_ma", 1);
+   pubJoystickMA = nh.advertise<std_msgs::Float32MultiArray>("/golfinho/commands", 1);
+
+   joystick_ma.data.reserve(10);
+   joystick_ma.data.resize(10,0.0);
+
+   //this->subSensorsMA = nh.subscribe<std_msgs::Float64MultiArray>("vilma_ma_ros/sensors_ma",1,boost::bind(&RoadLineProcessing::SensorsMaAcquisition, this, _1));
+
+// @bug the width and heigh of the image should be know apriori, use the instrisic parameter of the camera
+   width_image=640;
+   heigh_image=480;
+
+///@TODO: configure the number of horizontal lines to detect
+
+   // hlines.resize(3);
+   //hlines[0].Configure(400,width_image,line_resolution,width_road_m);
+   //hlines[1].Configure(300,width_image,line_resolution,width_road_m);
+   //hlines[2].Configure(270,width_image,line_resolution,width_road_m);
+
+   cv::Point2f start(521.0, 91.0),
+   		 end(620.0, 200.0);
+
+   //cv::Point2f start(473.098, 163.124),
+   //   		         end(640.289, 271.633);
+
+   //fix the desired line equation
+   float m = (double)(end.x - start.x) / (end.y - start.y);
+   float b = (double) start.x - m * start.y;
+
+   //float value =( (end.y-start.y) * (end.y-start.y) )+( (end.x-start.x) * (end.x-start.x) );
+   //float angle = asin( (end.x - start.x) / value);
+
+   desired_line = new cv::Mat_<float> (5,1);
+   mb_ant= new cv::Mat_<float> (2,1);
+
+   float desired_y =  106.0;//215.827;
+   float desired_x = m*desired_y + b; //round_int(m*desired_y + b);
+
+   (*desired_line)(0) = desired_x;
+   (*desired_line)(1) = desired_y;
+   (*desired_line)(2) = m;
+   (*desired_line)(3) = b;
+
+   (*mb_ant)(0)=m;
+   (*mb_ant)(1)=b;
+   ex_ant=0;
+   ex_sum=0;
+   t_ant= ros::Time::now().toSec();
+   nh.param("k_p",kp,0.0015);
+   nh.param("k_i",ki,0.00);
+   nh.param("k_d",kd,0.00);
+   std::cout<< "ki: " <<ki<<" kd: "<<kd<<" kp: "<<kp<<std::endl;
+   //(*desired_line)(4) = angle;
+
+   std::cout<< " image 1... " <<std::endl;
+
+   image = (double *) malloc( width_image * heigh_image * sizeof(double) );
+   search_mask = (unsigned char *) malloc( width_image * heigh_image * sizeof(unsigned char) );
+
+   std::cout<< " image 2... " <<std::endl;
+   //KF = new cv::KalmanFilter(4, 2, 0);
+
+   // intialization of KF...
+   //KF->transitionMatrix = *(cv::Mat_<float>(8, 8) << 1,0,0,0,1,0,0,0,   0,1,0,0,0,1,0,0,  0,0,1,0,0,0,1,0,  0,0,0,1,0,0,0,1, 0,0,0,0,1,0,0,0, 0,0,0,0,0,1,0,0, 0,0,0,0,0,0,1,0, 0,0,0,0,0,0,0,1);
+   
+   //KF->transitionMatrix = *(cv::Mat_<float>(4, 4) << 1,0,1,0,   0,1,0,1,  0,0,1,0,  0,0,0,1);
+
+  // measurement = new cv::Mat_<float> (4,1);
+  // measurement->setTo(cv::Scalar(0));
+
+
+  // KF->statePre.at<float>(0) = m;
+  // KF->statePre.at<float>(1) = b;
+  // KF->statePre.at<float>(2) = 0.0;
+  // KF->statePre.at<float>(3) = 0.0;
+
+   //KF->statePre.at<float>(4) = 0.0;
+   //KF->statePre.at<float>(5) = 0.0;
+   //KF->statePre.at<float>(6) = 0.0;
+   //KF->statePre.at<float>(7) = 0.0;
+   //cv::setIdentity(KF->measurementMatrix);
+
+
+
+   //Measure matrix should be 2x4??
+
+   //measurement = new cv::Mat_<float> (2,1);
+   //measurement->setTo(cv::Scalar(0));
+   //KF->statePre.at<float>(0) = m;
+   //KF->statePre.at<float>(1) = b;
+   //KF->measurementMatrix= *(cv::Mat_<float>(2, 4) << 1,0,0,0,   0,1,0,0);
+
+   //KF->measurementNoiseCov= *(cv::Mat_<float>(2, 2) << 0.01,0,   0, 0.5);
+
+   //cv::setIdentity(KF->processNoiseCov, cv::Scalar::all(1e-4));
+   //cv::setIdentity(KF->measurementNoiseCov, cv::Scalar::all(0.5));
+   //cv::setIdentity(KF->errorCovPost, cv::Scalar::all(.1));
+
+
+   std::cout<< " oi... " <<std::endl;
+   cv::namedWindow("view");
+   cv::startWindowThread();
+   std::cout<< " oi 3222... " <<std::endl;
+};
+
+
+RoadLineProcessing::~RoadLineProcessing()
+{
+
+	 free( (void *) search_mask );
+	 free( (void *) image );
+	 //delete (KF);
+	 //delete (measurement);
+	 delete (desired_line);
+	 delete (mb_ant);
+
+	cv::destroyWindow("view");
+}
+
+
+void RoadLineProcessing::Old_lineExtraction(const sensor_msgs::ImageConstPtr& msg)
+{
+
+	//@bug it is not neceesary to convert to opencv image
+	    cv_bridge::CvImagePtr cv_ptr;
+
+	    cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+	    cv::Vec3b intensity;
+	    unsigned int x,y,i;//,j;
+	    unsigned int X = msg->width;  /* x image size */
+	    unsigned int Y = msg->height;  /* y image size */
+
+	    double *image = (double *) malloc( X * Y * sizeof(double) );
+
+	   for( x=0;x<X;x++)
+	    for(y=0;y<Y;y++){
+			intensity = cv_ptr->image.at<cv::Vec3b>(y,x);
+			image[ x + y * X ] = ( y < 150)? 0: (double) intensity.val[1];//(intensity.val[2]+intensity.val[1]+intensity.val[0])/3;
+		}
+
+
+	    /* LSD call */
+
+	    int n=0;
+	    int k=0;
+
+	///detect the lines
+	    double * out = lsd(&n,image,X,Y);
+
+	///with the lines detected made the histograms of the horizontallines
+	  double m,b,distance;
+	    int index;
+	     int n_used=0;
+
+	    for (k=0;k<hlines.size();k++){
+	for (int j=0;j<hlines[k].hist_x.size();j++){
+	    hlines[k].hist_x[j]=0;
+	}
+	    }
+	    for(i=0;i<n;i++)
+	    {
+	    	//find the line equation
+			m=(out[ i * 7 + 2 ]-out[ i * 7 + 0 ])/(out[ i * 7 + 3 ]-out[ i * 7 + 1 ]);
+			b=out[ i * 7 + 0 ]-m*out[ i * 7 + 1 ];
+			//TODO:the distance should be find in the cartesian space not in pixel , because the perpestic
+			distance=sqrt((out[ i * 7 + 2 ]-out[ i * 7 + 0 ])*(out[ i * 7 + 2 ]-out[ i * 7 + 0 ])+(out[ i * 7 + 3 ]-out[ i * 7 + 1 ])*(out[ i * 7 + 3 ]-out[ i * 7 + 1 ]));
+
+		for (k=0;k<hlines.size();k++){
+			index=round_int((m*hlines[k].y_desired+b)/hlines[k].pixel_width);
+			//just if index is rigth and is in between an angles add to histogram
+			if(index>=0 && index<hlines[k].hist_x.size() && std::abs(m) > 0.1 && std::abs(m)<15)
+			   hlines[k].hist_x[index]+=distance;
+		}
+
+	//just draw the lines
+		  if (DEBUG){
+	          int thickness = (int) out[7*i+4];
+		  int lineType = 8;
+			  cv::Point start = cv::Point(out[ i * 7 + 0 ],out[ i * 7 + 1 ]),
+						end = cv::Point(out[ i * 7 + 2 ],out[ i * 7 + 3 ]);
+			if(std::abs(m)>0.1 && std::abs(m)<20){
+			cv::line( cv_ptr->image,start,end, cv::Scalar( (i*105)%255, 0, (i*55)%255 ), thickness, lineType );
+			n_used++;
+			}
+		}
+
+	    }
+	    /* print output */
+	if (DEBUG){
+	    printf(" line segments found: %d used: %d\n",n,n_used);
+	}
+
+
+	///filter the histogram k and k-1
+	    for (k=0;k<hlines.size();k++){
+	    for (int j=0;j<hlines[k].hist_x_ant.size();j++){
+		hlines[k].hist_x_ant[j]=histogram_filter*hlines[k].hist_x[j]+(1-histogram_filter)*hlines[k].hist_x_ant[j];
+	      //  hlines[k].hist_x_ant[j]=(hlines[k].hist_x[j]+hlines[k].hist_x_ant[j])/2;
+	       }
+	     }
+
+
+
+	    int lineType = 8;
+
+	for (k=0;k<hlines.size();k++){
+	//detect each line
+		double max_index= hlines[k].lineSensor( width_filter,max_filter);
+	    if (DEBUG){
+	    //plot the point of the lines
+	       for (int j=0;j<hlines[k].linePosition.size();j++){
+		     if (hlines[k].linePosition[j]>0)
+			cv::circle(cv_ptr->image, cv::Point(hlines[k].linePosition[j]*hlines[k].pixel_width,hlines[k].y_desired), 5, cv::Scalar( 0, 255, 0 ), -1, CV_AA);
+	       }
+	     //plot the point of the max histogram detected value
+		 cv::circle(cv_ptr->image, cv::Point(max_index*hlines[k].pixel_width,hlines[k].y_desired), 5, cv::Scalar( 0, 0, 255 ), -1, CV_AA);
+
+	//	cv::line( cv_ptr->image,cv::Point(max_index*hlines[k].pixel_width,hlines[k].y_desired),cv::Point(max_index*hlines[k].pixel_width,Y),
+	//		 cv::Scalar( 0, 0, 255 ), hlines[k].pixel_width, lineType );
+
+
+	    printf("%d,%d,%d\n\n",hlines[k].linePosition[0],hlines[k].linePosition[1],hlines[k].linePosition[2]);
+	    //draw the histogram
+	    for (int j=0;j<hlines[k].hist_x.size();j++)
+	    {
+		//hist_x_ant[j]=hist_x_ant[j];
+	      cv::line( cv_ptr->image,cv::Point(j*hlines[k].pixel_width,hlines[k].y_desired-0.5*hlines[k].hist_x_ant[j]),cv::Point(j*hlines[k].pixel_width,hlines[k].y_desired),
+		 cv::Scalar( 0, 0, 255 ), 1, lineType );
+	    }
+	    }
+	}
+
+
+	///opencv show TODO: remove??
+	    //cv::imshow("view", cv_bridge::toCvShare(img, "bgr8")->image);
+	    cv::imshow("view", cv_ptr->image);
+	    cv::waitKey(3);
+
+	   /* free memory */
+	   free( (void *) out );
+	   free( (void *) image );
+}
+
+
+void RoadLineProcessing::lineExtraction(const sensor_msgs::ImageConstPtr& msg)
+{
+
+std::cout<< " lineExtraction... " <<std::endl;
+
+	int Hor_line_thresh = 1; //30
+	std::map<int,double> used_lines_aux,used_lines;
+	int dim = 7;
+	int * region;
+	int regX=0,regY=0;
+
+	cv::Point2f start, end;
+
+	//@bug it is not neceesary to convert to opencv image
+	cv_bridge::CvImagePtr cv_ptr;
+
+	//double t1=ros::Time::now().toSec();
+
+
+	cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+	cv::Vec3b intensity;
+
+	roiX = 320;
+
+	unsigned int x,y,i;//,j;
+	unsigned int X = msg->width - roiX;  /* x image size */
+	unsigned int Y = msg->height - 180; //150 /* y image size */
+
+
+
+
+	for( x=roiX;x<msg->width;x++)
+		for(y=0;y<Y;y++){
+			intensity = cv_ptr->image.at<cv::Vec3b>(y,x);
+
+			if(y < Hor_line_thresh )
+			{
+				search_mask[ x + y * X ] = 	image[ x + y * X ] = 0;
+			}
+			else
+			{
+				search_mask[ x + y * X ] = 1;
+				image[ x + y * X ] = (double) (intensity.val[2]+intensity.val[1]+intensity.val[0])/3;
+			}
+
+		}
+
+
+	/* LSD call */
+
+	int n=0;
+	int k=0;
+	//double t2=ros::Time::now().toSec();
+	//std::cout<<"time1 "<<t2-t1<<"\t";
+	//t1=t2;
+	///detect the lines
+	//double * out = lsd(&n,image,X,Y);
+
+
+	/* execute LSD */
+
+	/*double * out = LineSegmentDetection( &n, image, X, Y,
+	                               1.0, //scale
+	                               1.0, //sigma_coef
+	                               2.0,// quant
+	                               22.5 , // "ang_th"),
+	                               0.0 , // "log_eps"),
+	                               0.7 , //"density_th"),
+	                               1024 , // "n_bins"),
+	                               &region,
+	                               &regX, &regY );
+	*/
+	
+	double * out = LineSegmentDetection( &n, image, X, Y,
+	                               1.0, //scale
+	                               1.0, //sigma_coef
+	                               2.0,// quant
+	                               22.5 , // "ang_th"),
+	                               2.0 , // "log_eps"),
+	                               0.7 , //"density_th"),
+	                               1024 , // "n_bins"),
+	                               &region,
+	                               &regX, &regY );
+
+	//2=ros::Time::now().toSec();
+	//	std::cout<<"time2 "<<t2-t1<<"\t";
+	//	t1=t2;
+	///with the lines detected made the histograms of the horizontallines
+	double m,b,distance;
+	int index;
+	int n_used=0;
+
+
+	for(i=0;i<n;i++)
+	{
+		//out[ i * dim + 0 ]+=roiX;
+		//out[ i * dim + 2 ]+=roiX;
+		start = cv::Point2d(out[ i * dim + 0 ],out[ i * dim + 1 ]);
+		  end = cv::Point2d(out[ i * dim + 2 ],out[ i * dim + 3 ]);
+
+		index=round_int(start.y) * X + round_int(start.x);
+		if(search_mask[index] != 1 && search_mask[index] != 1)
+			 continue;
+
+		//printf("start.(%f,%f), end(%f,%f) ::: outX1(%f,%f), outX2(%f,%f) \n\n",start.x,start.y,end.x,end.y,out[ i * dim + 0 ],out[ i * dim + 1 ],out[ i * dim + 2 ],out[ i * dim + 3 ]);
+		//find the line equation
+		m = (double)(end.x - start.x) / (end.y - start.y);
+		b = (double) start.x - m * start.y;
+		//printf(" m: %f b: %f \n",m,b);
+		//m=(out[ i * dim + 2 ]-out[ i * dim + 0 ])/(out[ i * dim + 3 ]-out[ i * dim + 1 ]);
+		//b=out[ i * dim + 0 ]-m*out[ i * dim + 1 ];
+		//printf(" m: %f b: %f \n\n\n",m,b);
+
+
+		if(!(std::abs(m)>0.05 && std::abs(m)<10))
+			continue;
+
+		n_used++;
+		used_lines_aux[i+1] = m;
+		//pointsGenerator(start,end,dist_threshold);
+
+		/*
+		//TODO:the distance should be find in the cartesian space not in pixel , because the perpestic
+		distance=sqrt((out[ i * dim + 2 ]-out[ i * dim + 0 ])*(out[ i * dim + 2 ]-out[ i * dim + 0 ])+(out[ i * dim + 3 ]-out[ i * dim + 1 ])*(out[ i * dim + 3 ]-out[ i * dim + 1 ]));
+
+		for (k=0;k<hlines.size();k++){
+			index=round_int((m*hlines[k].y_desired+b)/hlines[k].pixel_width);
+			//just if index is rigth and is in between an angles add to histogram
+			if(index>=0 && index<hlines[k].hist_x.size() && std::abs(m) > 0.1 && std::abs(m)<15)
+			   hlines[k].hist_x[index]+=distance;
+		}*/
+
+
+
+
+
+	 }
+
+
+	//printf(" LINHA NO USED LINES AUX   %d :::::: \n",(int)used_lines_aux.size());
+
+
+	for( x=0;x<X;x++)
+	{
+		y = Y-1;
+		//printf("DENTRO FOR x= %d y= %d  :::::: \n",x,y);
+
+		for(y = Y-1; y >= Hor_line_thresh; --y)
+		{
+			int id = region[x + y * X ];
+			std::map<int,double>::iterator it = used_lines_aux.find(id);
+			if(id!=0 &&  it != used_lines_aux.end() )
+			{
+				used_lines[id] = it->second;
+				//printf("INSERINDO LINHA NO USED LINES   %d :::::: \n",region[x + y * X ]);
+				break;
+			}
+
+		}
+	}
+
+
+
+	Eigen::VectorXf line = this->lineFitting(used_lines,out,cv_ptr);
+
+
+	//t2=ros::Time::now().toSec();
+	//	std::cout<<"time3 "<<t2-t1<<"\t";
+	//	t1=t2;
+
+	start.x = line(0); start.y = line(1);
+	end.x = line(0)+line(3)*100; end.y = line(1)+line(4)*100;
+
+	if(end.y < start.y)
+	{
+		float aux = end.y;
+		end.y = start.y;
+		start.y = aux;
+
+		aux = end.x;
+		end.x = start.x;
+		start.x = aux;
+	}
+	// First predict, to update the internal statePre variable
+	//cv::Mat prediction = KF->predict();
+
+	//fix the desired line equation
+	m = (end.x - start.x) / (end.y - start.y);
+	b =  start.x - m * start.y;
+
+	//cv::Point2f predictPt1(prediction.at<float>(0),prediction.at<float>(1));
+	//cv::Point2f predictPt2(prediction.at<float>(2),prediction.at<float>(3));
+
+
+
+	//(*measurement)(0) = m;
+	//(*measurement)(1) = b;
+	//(*measurement)(0) = start.x;
+	//(*measurement)(1) = start.y;
+	//(*measurement)(2) = line(0)+line(3)*100;
+	//(*measurement)(3) = line(1)+line(4)*100;
+
+	// The update phase
+	//cv::Mat estimated = KF->correct(*measurement);
+	//cv::Point2f statePt2( estimated.at<float>(0) * (*desired_line)(1) + estimated.at<float>(1) ,(*desired_line)(1));
+	//	cv::Point2f statePt1( estimated.at<float>(0) * 0.0 + estimated.at<float>(1) , 0.0);
+	if(abs(m-(*mb_ant)(0))<2.5 )
+	{
+		 double sigma_m=0.65,sigma_b=0.65;
+		 (*mb_ant)(0)=sigma_m*(*mb_ant)(0)+(1-sigma_m)*m;
+		 (*mb_ant)(1)=sigma_b*(*mb_ant)(1)+(1-sigma_b)*b;
+	}
+
+	 cv::Point2f statePt2( roiX + ((*mb_ant)(0)* (*desired_line)(1) + (*mb_ant)(1)) ,(*desired_line)(1));
+	 cv::Point2f statePt1( roiX + ((*mb_ant)(0) * 0.0 + (*mb_ant)(1) ), 0.0);
+
+
+
+	//cv::Point2f statePt1(estimated.at<float>(0),estimated.at<float>(1));
+	//cv::Point2f statePt2(estimated.at<float>(2),estimated.at<float>(3));
+	cv::Point2f aux_pt((*desired_line)(2)*300 + (*desired_line)(3),300);
+
+
+	//double driver_wheel = (velocity > 1.0) ? visual_servoing_control(statePt1, statePt2 ): 0.0;
+
+	//double driver_wheel = visual_servoing_control(statePt1, statePt2 );
+	double driver_wheel = visual_servoing_control(statePt1, statePt2 );
+
+	send_data(driver_wheel, 10.0,0.0);
+
+	//for(int i=0; i < points.size();i++)
+	//{
+	//	cv::circle(cv_ptr->image, start, 4, cv::Scalar( 0, 0, 255 ), -1, CV_AA);
+	//	cv::circle(cv_ptr->image, statePt1, 4, cv::Scalar( 0, 0, 255 ), -1, CV_AA);
+	//	cv::circle(cv_ptr->image, end, 4, cv::Scalar( 0, 100, 155 ), -1, CV_AA);
+	//	cv::circle(cv_ptr->image, statePt2, 4, cv::Scalar( 0, 100, 155 ), -1, CV_AA);
+	//}
+
+
+
+
+
+	cv::line( cv_ptr->image,cv::Point2f((*desired_line)(0),(*desired_line)(1)),aux_pt, cv::Scalar( 255,255, 255 ), 2, 8 );
+	cv::line( cv_ptr->image,statePt1,statePt2, cv::Scalar( 255 , 0, 255 ), 3, 8 );
+
+
+
+	///opencv show TODO: remove??
+	    //cv::imshow("view", cv_bridge::toCvShare(img, "bgr8")->image);
+	    cv::imshow("view", cv_ptr->image);
+	   // cv::waitKey(3);
+
+
+	   // t2=ros::Time::now().toSec();
+	   // 		std::cout<<"time4 "<<t2-t1<<"\n";
+	   // 		t1=t2;
+
+	   /* free memory */
+	   free( (void *) region );
+	   free( (void *) out );
+}
+
+double RoadLineProcessing::visual_servoing_control(cv::Point2f statePt1, cv::Point2f statePt2 )
+{
+
+	////////////////////////////////////////////////////////////////////////////////////////////////////
+	// VISUAL SERVOING CONTROL
+	////////////////////////////////////////////////////////////////////////////////////////////////////
+
+	std::cout << "pt1: " << statePt1 << "pt2: " << statePt2 << " Velocity: " << velocity << std::endl;
+
+
+	//float value =( (statePt2.y-statePt1.y) * (statePt2.y-statePt1.y) )+( (statePt2.x-statePt1.x) * (statePt2.x-statePt1.x) );
+	//float observed_angle = asin( (statePt2.x - statePt1.x) / value);
+
+	//find the line equation
+	double m = (statePt2.x - statePt1.x) / (statePt2.y - statePt1.y);
+	double b = statePt1.x - m * statePt1.y;
+
+	cv::Point2f observed_pt(m*(*desired_line)(1) + b,(*desired_line)(1));
+
+
+	cv::Mat_<float> error_control(2,1); // error_x and error_theta
+
+
+	float observed_angle = atan(m);
+
+
+	   double u,dt= 0;
+	   u=ros::Time::now().toSec();
+	   dt=u-t_ant;
+	   t_ant=u;
+	   //roslaunch vilma_perception line_detection.launch ki:=0.0008 kd:=0.001 kp:=0.0006
+
+	error_control(0) = (*desired_line)(0) - observed_pt.x; // estimated X error
+
+	   ex_sum+=error_control(0)*dt;  //integral
+
+	   ex_sum=std::max(-40.0, std::min(ex_sum, 40.0)); //stauration integral
+
+
+
+	   u=error_control(0)*kp+kd*(error_control(0)-ex_ant)/dt+ki*ex_sum;
+	   ex_ant=error_control(0);
+	   error_control(0)=u;
+	//error_control(1) = (*desired_line)(4) - observed_angle; // estimated theta error
+	error_control(1) = (atan((*desired_line)(2)) - observed_angle) * kp;
+
+	double lambda = 1;
+	double pho = 30.0/180.0*M_PI; // radians
+	double ty = 1.4f; // meters
+	double tz = 2.2f; // meters
+	double v = 2.0f;  // m/s
+	double c_x = 320.00;//389.6477;
+	double c_y = 240.00;//137.8856;
+
+	double delta = controller( 0.0, //(*desired_line)(4), // Theta reference
+							   0.0, // (*desired_line)(0) - c_x,  // X point reference
+							   0.0, //(*desired_line)(1) - c_y,  // Y point reference
+								 error_control(1), // theta error
+								 error_control(0), //  X error
+										   lambda, // lambda paramenter of the controller
+											  pho, // pho: tilt angle of the camera
+											   ty, // y axis translation to camera reference
+											   tz, // z axis translation to camera reference
+												v // speed...
+									  );
+	delta = -delta;
+
+	//double driver_wheel = delta * 2.26709332 ; // // Steering driver wheel
+	double driver_wheel;	
+	//driver_wheel = std::max(std::min(1.0,driver_wheel),-1.0) * -1.0f;
+	
+	//cv::Point2f statePt2 = statePt1 + vector * 200;
+	std::cout << "Time DeltaT (dt) : " << dt << "\n Desired_point: " << cv::Point2f((*desired_line)(0),(*desired_line)(1)) << " Desired Angle: " << atan((*desired_line)(2))/M_PI*180.0 << "\n  Observerd_pt: " << observed_pt << " Observed Angle: " << observed_angle/M_PI*180.0 << "\n ERROR (X): " << error_control(0) << " (theta) " << error_control(1)/M_PI*180 << "\n Delta: " << delta/M_PI*180 << " [degree] \n delta: " << delta << " [rad] "  << std::endl;
+
+	std::max(std::min(delta,(double)0.6),(double)-0.6);
+	//return driver_wheel;
+	return delta; // [rad]
+}
+
+void RoadLineProcessing::send_data(double driver_wheel, double gas, double brake)
+{
+
+	//joystick_ma.data[0] = ros::Time::now().toSec();
+	//joystick_ma.data[1] = 600; // ms time
+	//joystick_ma.data[2] = 0.0; // brake command
+	//joystick_ma.data[3] = 0.0; // brake value
+	//joystick_ma.data[4] = 2; // operation mode [1: velocity (speed), 2: position, 3: torque]
+	//joystick_ma.data[5] = driver_wheel; // Steering driver wheel angle normalized [-1 to 1]
+	//joystick_ma.data[6] = 0.0; // gear command [0: offline, 1: neutral, 2: reverse, 3: driver]
+	//joystick_ma.data[7] = 0.0; // gear value
+
+	//std::cout << " SEND DATA: [5]: " << joystick_ma.data[5] << " Time: [0] : " <<  joystick_ma.data[0] << std::endl;
+	
+	joystick_ma.data[0] = ros::Time::now().toSec(); // Timestamp
+	joystick_ma.data[1] = driver_wheel; // steering [rad]
+	joystick_ma.data[2] = 2; // speed [m/s]
+
+	this->pubJoystickMA.publish(joystick_ma);
+
+}
+
+
+
+Eigen::VectorXf RoadLineProcessing::lineFitting(std::map<int,double> used_lines, double* out, cv_bridge::CvImagePtr cv_ptr)
+{
+	int dim = 7;
+	//printf(" LINEEEE 1 \n\n\n\n");
+
+	Eigen::VectorXf coeff_refinedr,coeff_refinedl;
+
+	pcl::PointCloud<pcl::PointXYZ> cloudl,cloudr;
+
+	cloudr.is_dense = cloudl.is_dense = true;
+
+	pcl::PointXYZ start,end;
+
+	//cloud.points.resize((int)used_lines.size() * 2);
+
+	int i=0;
+	for(std::map<int,double>::iterator it = used_lines.begin(); it!=used_lines.end(); ++it)
+	{
+
+		//double degree = atan (it->second) * 180.0 / 3.14159265;
+		//printf ("The arc tangent of %f is %f degrees\n", it->second, degree );
+
+
+		int index = it->first - 1;
+
+		//std::cout << "x: " << out[ index * dim + 0 ] << "y: " << out[ index * dim + 1 ] << std::endl;
+
+
+
+		//pcl::PointXYZ start,end;
+
+		start.x = (float)out[ index * dim + 0 ];   start.y = (float)out[ index * dim + 1 ]; start.z = 0.0;
+		  end.x = (float)out[ index * dim + 2 ];     end.y = (float)out[ index * dim + 3 ]; end.z = 0.0;
+
+		  double distance=std::sqrt((end.x-start.x)*(end.x-start.x)+(end.y-start.y)*(end.y-start.y));
+
+
+		if(it->second > 0)
+		{
+
+
+			 cloudr.push_back((pcl::PointXYZ)start);
+			 cloudr.push_back((pcl::PointXYZ)end);
+
+			//double distance=std::sqrt((end.x-start.x)*(end.x-start.x)+(end.y-start.y)*(end.y-start.y));
+
+			//printf("Distance: %f :: RightLines antes: %d   ",distance, (int)cloudr.points.size());
+			// cv::circle(cv_ptr->image, cv::Point2f(start.x,start.y), 3, cv::Scalar( 0, 255, 0 ), -1, CV_AA);
+			//cv::circle(cv_ptr->image, cv::Point2f(end.x,end.y), 3, cv::Scalar( 0, 255, 0 ), -1, CV_AA);
+
+			if(distance > 25)
+			{
+				pcl::PointXYZ mid   = pcl::PointXYZ((start.x + end.x) / 2.0, (start.y + end.y) / 2.0, 0.0);
+				pcl::PointXYZ mid_l = pcl::PointXYZ((mid.x + mid.x) / 2.0  , (start.y + end.y) / 2.0, 0.0);
+				pcl::PointXYZ mid_r = pcl::PointXYZ((start.x + end.x) / 2.0, (mid.y + mid.y) / 2.0 , 0.0);
+
+				//cloudr.push_back((pcl::PointXYZ)start);
+				//cloudr.push_back((pcl::PointXYZ)end);
+				cloudr.push_back((pcl::PointXYZ)mid);
+				cloudr.push_back((pcl::PointXYZ)mid_l);
+				cloudr.push_back((pcl::PointXYZ)mid_r);
+
+				//cv::circle(cv_ptr->image, cv::Point2f(mid.x,mid.y), 3, cv::Scalar( 0, 255, 0 ), -1, CV_AA);
+				//cv::circle(cv_ptr->image, cv::Point2f(mid_l.x,mid_l.y), 3, cv::Scalar( 0, 255, 0 ), -1, CV_AA);
+				//cv::circle(cv_ptr->image, cv::Point2f(mid_r.x,mid_r.y), 3, cv::Scalar( 0, 255, 0 ), -1, CV_AA);
+
+
+
+				//cloud.points[i].x = (float)out[ index * dim + 0 ];  cloud.points[i].y = (float)out[ index * dim + 1 ];   cloud.points[i].z = 0.0;
+
+				//std::cout << cloud.points[i] << std::endl;
+
+						++i;
+				//cloud.points[i].x = (float)out[ index * dim + 2 ];  cloud.points[i].y = (float)out[ index * dim + 3 ];   cloud.points[i].z = 0.0;
+
+						++i;
+
+
+			}
+
+
+			//printf("  Depois : %d  \n ", (int)cloudr.points.size());
+
+
+		}else
+		{
+			cloudl.push_back((pcl::PointXYZ)start);
+			cloudl.push_back((pcl::PointXYZ)end);
+
+			//double distance=std::sqrt((end.x-start.x)*(end.x-start.x)+(end.y-start.y)*(end.y-start.y));
+
+			//printf("Distance: %f :: leftLines antes: %d   ",distance, (int)cloudl.points.size());
+			//cv::circle(cv_ptr->image, cv::Point2f(start.x,start.y), 3, cv::Scalar( 255, 0, 0 ), -1, CV_AA);
+			//cv::circle(cv_ptr->image, cv::Point2f(end.x,end.y), 3, cv::Scalar( 255, 0, 0 ), -1, CV_AA);
+
+			if(distance > 25)
+			{
+				pcl::PointXYZ mid   = pcl::PointXYZ((start.x + end.x) / 2.0, (start.y + end.y) / 2.0, 0.0);
+				pcl::PointXYZ mid_l = pcl::PointXYZ((mid.x + mid.x) / 2.0  , (start.y + end.y) / 2.0, 0.0);
+				pcl::PointXYZ mid_r = pcl::PointXYZ((start.x + end.x) / 2.0, (mid.y + mid.y) / 2.0 , 0.0);
+
+				//cloudr.push_back((pcl::PointXYZ)start);
+				//cloudr.push_back((pcl::PointXYZ)end);
+				cloudl.push_back((pcl::PointXYZ)mid);
+				cloudl.push_back((pcl::PointXYZ)mid_l);
+				cloudl.push_back((pcl::PointXYZ)mid_r);
+
+
+
+				//cv::circle(cv_ptr->image, cv::Point2f(mid.x,mid.y), 3, cv::Scalar( 255, 0, 0), -1, CV_AA);
+				//cv::circle(cv_ptr->image, cv::Point2f(mid_l.x,mid_l.y), 3, cv::Scalar( 255, 0, 0 ), -1, CV_AA);
+				//cv::circle(cv_ptr->image, cv::Point2f(mid_r.x,mid_r.y), 3, cv::Scalar( 255, 0, 0 ), -1, CV_AA);
+
+				//cloud.points[i].x = (float)out[ index * dim + 0 ];  cloud.points[i].y = (float)out[ index * dim + 1 ];   cloud.points[i].z = 0.0;
+				//std::cout << cloud.points[i] << std::endl;
+
+				++i;
+				//cloud.points[i].x = (float)out[ index * dim + 2 ];  cloud.points[i].y = (float)out[ index * dim + 3 ];   cloud.points[i].z = 0.0;
+
+				++i;
+
+
+			}
+
+		}
+
+	}
+
+	if(cloudr.points.size() < 5 )
+		return previous_coeffr;
+	  //printf(" Cloudr Points: %d  :: Cloudl Points: %d \n", (int)cloudr.points.size(),(int)cloudl.points.size());
+
+
+	  // Create a shared line model pointer directly
+	  SampleConsensusModelLinePtr modelr (new pcl::SampleConsensusModelLine<pcl::PointXYZ> (cloudr.makeShared ()));
+	  //SampleConsensusModelLinePtr modell (new pcl::SampleConsensusModelLine<pcl::PointXYZ> (cloudl.makeShared ()));
+
+	  //printf(" LINEEEE 2 \n\n\n\n");
+
+	  // Create the RANSAC object
+	  pcl::RandomSampleConsensus<pcl::PointXYZ> sac_r (modelr, 5);
+	  //pcl::RandomSampleConsensus<pcl::PointXYZ> sac_l (modell, 5);
+
+	  //printf(" LINEEEE 3 \n\n\n\n");
+	  // Algorithm tests
+	  bool resultr = sac_r.computeModel ();
+	  //bool resultl = sac_l.computeModel ();
+
+	  //printf(" LINEEEE 4 \n\n\n\n");
+	  //std::vector<int> sample;
+	  //sac_r.getModel (sample);
+
+	  //printf("sample.size: %d , [0]: %d , [1]: %d",(int)sample.size (),sample[0],sample[1]);
+	  /*
+	  EXPECT_EQ ((int)sample.size (), 2);
+	  EXPECT_EQ (sample[0], 1);
+	  EXPECT_EQ (sample[1], 3);
+		*/
+	  std::vector<int> inliersr,inliersl;
+	  Eigen::VectorXf coeffr,coeffl;
+
+	  sac_r.getInliers (inliersr);
+	  //sac_l.getInliers (inliersl);
+
+	  //std::cout<< " \n inliers R .:  " << (int)inliersr.size() <<  " \n inliers L .:  " << (int)inliersl.size() << std::endl;
+
+	  sac_r.getModelCoefficients (coeffr);
+	  //sac_l.getModelCoefficients (coeffl);
+
+	  //std::cout<< " \n coef R .: \n " << coeffr <<  " \n coef L .: \n " << coeffl << std::endl;
+	  //printf("\n\n LINEEEE 7\n\n\n\n");
+
+
+
+	  modelr->optimizeModelCoefficients (inliersr, coeffr, coeff_refinedr);
+	  //modell->optimizeModelCoefficients (inliersl, coeffl, coeff_refinedl);
+
+	  //std::cout<< " \n coef_REFINADO R.: \n " << coeff_refinedr << " \n coef_REFINADO L.: \n " << coeff_refinedl << std::endl;
+
+	  	  cv::line( cv_ptr->image,cv::Point(roiX+coeff_refinedr(0),coeff_refinedr(1)),cv::Point( roiX + coeff_refinedr(0)+coeff_refinedr(3)*355,coeff_refinedr(1)+coeff_refinedr(4)*355), cv::Scalar( 0,255, 255 ), 3, 8 );
+	  //cv::line( cv_ptr->image,cv::Point(coeff_refinedl(0),coeff_refinedl(1)),cv::Point(coeff_refinedl(0)+coeff_refinedl(3)*155,coeff_refinedl(1)+coeff_refinedl(4)*155), cv::Scalar( 0,255, 255 ), 3, 8 );
+
+	  previous_coeffr = coeff_refinedr;
+
+	  return coeff_refinedr;
+}
+
+
+
+/**
+@brief
+ROS callback that return the image from the topic
+@param msg sensor_msgs::Image
+
+**/
+void RoadLineProcessing::imageCallback(const sensor_msgs::ImageConstPtr& msg)
+{
+
+  try
+  {
+	  std::cout<< " image callback... " <<std::endl;
+	  //Old_lineExtraction(msg);
+	  lineExtraction(msg);
+
+  }
+  catch (cv_bridge::Exception& e)
+  {
+    ROS_ERROR("Could not convert from '%s' to 'bgr8'.", msg->encoding.c_str());
+  }
+};
+
+
+void RoadLineProcessing::SensorsMaAcquisition(const std_msgs::Float32MultiArray::ConstPtr &msg)
+{
+	double tmp=0;
+	int k=0;
+	//std::cout << "ma time " << msg->data[16 ]<< std::endl;
+	for (int i=19;i<23;i++){
+		if(msg->data[i]>0 && msg->data[i]<300){
+			tmp+=msg->data[i]/3.6;
+			k++;
+		}
+
+	}
+	if(k>0)
+		velocity=tmp/(double)k;
+	else
+		velocity=0;
+
+}
